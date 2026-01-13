@@ -1,0 +1,222 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --panel-bg: #1e1e1e;
+  --panel-light: #252526;
+  --panel-border: #3c3c3c;
+  --accent: #007acc;
+  --accent-hover: #1e90ff;
+  --text-primary: #cccccc;
+  --text-secondary: #808080;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  background-color: var(--panel-bg);
+  color: var(--text-primary);
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--panel-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--panel-border);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #505050;
+}
+
+/* Panel styling */
+.panel {
+  background-color: var(--panel-light);
+  border: 1px solid var(--panel-border);
+}
+
+.panel-header {
+  padding: 8px 12px;
+  background-color: var(--panel-bg);
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+
+/* Button styling */
+.btn {
+  @apply px-3 py-1.5 rounded text-sm transition-colors;
+  background-color: var(--panel-border);
+  color: var(--text-primary);
+}
+
+.btn:hover {
+  background-color: #505050;
+}
+
+.btn-primary {
+  background-color: var(--accent);
+}
+
+.btn-primary:hover {
+  background-color: var(--accent-hover);
+}
+
+/* Input styling */
+.input {
+  @apply px-2 py-1 rounded text-sm;
+  background-color: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text-primary);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Tree view styling */
+.tree-item {
+  @apply flex items-center px-2 py-1 cursor-pointer rounded;
+}
+
+.tree-item:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.tree-item.selected {
+  background-color: rgba(0, 122, 204, 0.3);
+}
+
+/* Slider styling */
+input[type="range"] {
+  -webkit-appearance: none;
+  height: 4px;
+  background: var(--panel-border);
+  border-radius: 2px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+/* Tooltip */
+.tooltip {
+  @apply absolute z-50 px-2 py-1 text-xs rounded;
+  background-color: #000;
+  color: #fff;
+}
+
+/* Keyframe */
+.keyframe-diamond {
+  width: 10px;
+  height: 10px;
+  background-color: #ffd700;
+  transform: rotate(45deg);
+  cursor: pointer;
+}
+
+.keyframe-diamond:hover {
+  background-color: #ffed4a;
+}
+
+.keyframe-diamond.selected {
+  background-color: #ff8c00;
+}
+
+/* Weight colors */
+.weight-gradient {
+  background: linear-gradient(to right, #0066ff, #00ff00, #ffff00, #ff3300);
+}
+
+/* Drag and drop */
+.drop-zone {
+  @apply border-2 border-dashed rounded-lg p-8 text-center transition-colors;
+  border-color: var(--panel-border);
+}
+
+.drop-zone.active {
+  border-color: var(--accent);
+  background-color: rgba(0, 122, 204, 0.1);
+}
+
+/* Modal */
+.modal-overlay {
+  @apply fixed inset-0 z-50 flex items-center justify-center;
+  background-color: rgba(0, 0, 0, 0.7);
+}
+
+.modal-content {
+  @apply rounded-lg p-6 max-w-lg w-full mx-4;
+  background-color: var(--panel-light);
+  border: 1px solid var(--panel-border);
+}
+
+/* Context menu */
+.context-menu {
+  @apply absolute z-50 rounded shadow-lg py-1 min-w-32;
+  background-color: var(--panel-light);
+  border: 1px solid var(--panel-border);
+}
+
+.context-menu-item {
+  @apply px-3 py-1.5 text-sm cursor-pointer;
+}
+
+.context-menu-item:hover {
+  background-color: var(--accent);
+}
+
+/* Animation */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse {
+  animation: pulse 2s infinite;
+}
+
+/* Resize handles */
+.resize-handle {
+  @apply absolute bg-transparent;
+}
+
+.resize-handle:hover {
+  background-color: var(--accent);
+}
+
+.resize-handle-h {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.resize-handle-v {
+  height: 4px;
+  cursor: row-resize;
+}
