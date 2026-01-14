@@ -122,6 +122,14 @@ export interface AutoWeightSettings {
   neighborWeight: number
 }
 
+export interface BoneRestPose {
+  position: [number, number, number]
+  rotation: [number, number, number, number]
+  scale: [number, number, number]
+}
+
+export type RestPoseSnapshot = Record<string, BoneRestPose>
+
 // Selection Types
 export interface Selection {
   type: 'bone' | 'mesh' | 'vertex' | null

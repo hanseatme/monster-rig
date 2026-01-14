@@ -2,7 +2,7 @@ import { useRef, useCallback, useEffect } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useEditorStore } from '../../store'
-import type { Keyframe, BoneData } from '../../types'
+import type { Keyframe, BoneData, RestPoseSnapshot } from '../../types'
 
 function interpolateValue(
   keyframes: Keyframe[],
@@ -131,7 +131,7 @@ function calculateLocalRotation(
 function applyForwardKinematics(
   bones: BoneData[],
   restPose: RestPose,
-  updateBone: (id: string, data: Partial<BoneData>) => void,
+  updateBoneFromAnimation: (id: string, data: Partial<BoneData>) => void,
   animatedPositionIds: Set<string>,
   animatedRotationIds: Set<string>
 ) {
@@ -180,7 +180,7 @@ function applyForwardKinematics(
             rotation: existing?.rotation || new THREE.Quaternion(),
           })
 
-          updateBone(child.id, {
+          updateBoneFromAnimation(child.id, {
             position: [newChildPos.x, newChildPos.y, newChildPos.z]
           })
         }
@@ -192,7 +192,7 @@ function applyForwardKinematics(
             position: existing?.position || new THREE.Vector3(),
             rotation: newChildRot.clone(),
           })
-          updateBone(child.id, {
+          updateBoneFromAnimation(child.id, {
             rotation: [newChildRot.x, newChildRot.y, newChildRot.z, newChildRot.w]
           })
         }
@@ -211,19 +211,39 @@ export default function AnimationController() {
 
   // Initialize rest pose when animation starts or skeleton changes
   const initializeRestPose = useCallback(() => {
-    const { skeleton } = useEditorStore.getState()
+    const { skeleton, restPoseSnapshot, setRestPoseSnapshot } = useEditorStore.getState()
+    const snapshot: RestPoseSnapshot = restPoseSnapshot ?? {}
+    if (!restPoseSnapshot) {
+      skeleton.bones.forEach((bone) => {
+        snapshot[bone.id] = {
+          position: [...bone.position] as [number, number, number],
+          rotation: [...bone.rotation] as [number, number, number, number],
+          scale: [...bone.scale] as [number, number, number],
+        }
+      })
+      setRestPoseSnapshot(snapshot)
+    }
     const restPose: RestPose = {}
 
     skeleton.bones.forEach(bone => {
+      const rest = snapshot[bone.id]
+      const restBone: BoneData = rest
+        ? { ...bone, position: rest.position, rotation: rest.rotation, scale: rest.scale }
+        : bone
       const parent = bone.parentId
         ? skeleton.bones.find(b => b.id === bone.parentId)
         : undefined
+      const parentRest = parent
+        ? snapshot[parent.id]
+          ? { ...parent, position: snapshot[parent.id].position, rotation: snapshot[parent.id].rotation, scale: snapshot[parent.id].scale }
+          : parent
+        : undefined
 
       restPose[bone.id] = {
-        position: [...bone.position] as [number, number, number],
-        rotation: [...bone.rotation] as [number, number, number, number],
-        localOffset: calculateLocalOffset(bone, parent),
-        localRotation: calculateLocalRotation(bone, parent)
+        position: [...restBone.position] as [number, number, number],
+        rotation: [...restBone.rotation] as [number, number, number, number],
+        localOffset: calculateLocalOffset(restBone, parentRest),
+        localRotation: calculateLocalRotation(restBone, parentRest)
       }
     })
 
@@ -234,7 +254,7 @@ export default function AnimationController() {
   // Apply animation to bones for a given frame
   const applyAnimation = useCallback((frame: number) => {
     const state = useEditorStore.getState()
-    const { animations, currentAnimationId, skeleton, updateBone } = state
+    const { animations, currentAnimationId, skeleton, updateBoneFromAnimation } = state
 
     const currentAnimation = animations.find((a) => a.id === currentAnimationId)
     if (!currentAnimation) return
@@ -263,15 +283,15 @@ export default function AnimationController() {
 
       switch (track.property) {
         case 'position':
-          updateBone(bone.id, { position: value as [number, number, number] })
+          updateBoneFromAnimation(bone.id, { position: value as [number, number, number] })
           animatedPositionIds.add(bone.id)
           break
         case 'rotation':
-          updateBone(bone.id, { rotation: value as [number, number, number, number] })
+          updateBoneFromAnimation(bone.id, { rotation: value as [number, number, number, number] })
           animatedRotationIds.add(bone.id)
           break
         case 'scale':
-          updateBone(bone.id, { scale: value as [number, number, number] })
+          updateBoneFromAnimation(bone.id, { scale: value as [number, number, number] })
           break
       }
     })
@@ -284,7 +304,7 @@ export default function AnimationController() {
       applyForwardKinematics(
         freshState.skeleton.bones,
         restPoseRef.current,
-        updateBone,
+        updateBoneFromAnimation,
         animatedPositionIds,
         animatedRotationIds
       )

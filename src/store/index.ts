@@ -13,6 +13,7 @@ import type {
   TimelineState,
   WeightPaintSettings,
   AutoWeightSettings,
+  RestPoseSnapshot,
   Selection,
   HistoryEntry,
   HistoryState,
@@ -49,6 +50,7 @@ interface EditorStore {
   timeline: TimelineState
   weightPaintSettings: WeightPaintSettings
   autoWeightSettings: AutoWeightSettings
+  restPoseSnapshot: RestPoseSnapshot | null
   autoBoneSettings: AutoBoneSettings
 
   // Mesh Hierarchy
@@ -74,9 +76,11 @@ interface EditorStore {
   // Actions - Skeleton
   addBone: (position: [number, number, number], parentId?: string | null) => string
   updateBone: (id: string, updates: Partial<BoneData>) => void
+  updateBoneFromAnimation: (id: string, updates: Partial<BoneData>) => void
   deleteBone: (id: string) => void
   setBoneParent: (boneId: string, parentId: string | null) => void
   mirrorBones: (axis: 'x' | 'y' | 'z') => void
+  setRestPoseSnapshot: (snapshot: RestPoseSnapshot | null) => void
 
   // Actions - Weights
   setWeightMap: (weightMap: WeightMap) => void
@@ -141,6 +145,18 @@ const createInitialAnimation = (name: string = 'idle'): AnimationClip => ({
   tracks: [],
 })
 
+const createRestPoseSnapshot = (skeleton: SkeletonData): RestPoseSnapshot => {
+  const snapshot: RestPoseSnapshot = {}
+  skeleton.bones.forEach((bone) => {
+    snapshot[bone.id] = {
+      position: [...bone.position] as [number, number, number],
+      rotation: [...bone.rotation] as [number, number, number, number],
+      scale: [...bone.scale] as [number, number, number],
+    }
+  })
+  return snapshot
+}
+
 const getInitialState = () => ({
   projectPath: null,
   modelPath: null,
@@ -181,6 +197,7 @@ const getInitialState = () => ({
     smoothIterations: 2,
     neighborWeight: 0.6,
   },
+  restPoseSnapshot: null,
   autoBoneSettings: { ...DEFAULT_AUTO_BONE_SETTINGS },
   meshHierarchy: [],
   history: [],
@@ -212,6 +229,7 @@ export const useEditorStore = create<EditorStore>()(
         state.isDirty = false
         state.history = []
         state.historyIndex = -1
+        state.restPoseSnapshot = createRestPoseSnapshot(data.skeleton)
       })
     },
 
@@ -242,11 +260,26 @@ export const useEditorStore = create<EditorStore>()(
 
     getProjectData: () => {
       const state = get()
+      const skeleton = state.restPoseSnapshot
+        ? {
+            bones: state.skeleton.bones.map((bone) => {
+              const rest = state.restPoseSnapshot?.[bone.id]
+              if (!rest) return bone
+              return {
+                ...bone,
+                position: rest.position,
+                rotation: rest.rotation,
+                scale: rest.scale,
+              }
+            }),
+          }
+        : state.skeleton
+
       return {
         version: '1.0',
         modelPath: state.modelPath || '',
         modelHash: state.modelHash,
-        skeleton: state.skeleton,
+        skeleton,
         weightMap: state.weightMap,
         animations: state.animations,
       }
@@ -258,6 +291,7 @@ export const useEditorStore = create<EditorStore>()(
       set((state) => {
         state.skeleton.bones.push(bone)
         state.isDirty = true
+        state.restPoseSnapshot = null
       })
       get().pushHistory(`Add bone: ${bone.name}`)
       return bone.id
@@ -269,6 +303,18 @@ export const useEditorStore = create<EditorStore>()(
         if (bone) {
           Object.assign(bone, updates)
           state.isDirty = true
+          if ('position' in updates || 'rotation' in updates || 'scale' in updates) {
+            state.restPoseSnapshot = null
+          }
+        }
+      })
+    },
+
+    updateBoneFromAnimation: (id, updates) => {
+      set((state) => {
+        const bone = state.skeleton.bones.find((b) => b.id === id)
+        if (bone) {
+          Object.assign(bone, updates)
         }
       })
     },
@@ -288,6 +334,7 @@ export const useEditorStore = create<EditorStore>()(
         // Remove the bone
         state.skeleton.bones = state.skeleton.bones.filter((b) => b.id !== id)
         state.isDirty = true
+        state.restPoseSnapshot = null
 
         // Clear selection if deleted
         if (state.selection.ids.includes(id)) {
@@ -303,6 +350,7 @@ export const useEditorStore = create<EditorStore>()(
         if (bone) {
           bone.parentId = parentId
           state.isDirty = true
+          state.restPoseSnapshot = null
         }
       })
       get().pushHistory('Change bone parent')
@@ -342,8 +390,15 @@ export const useEditorStore = create<EditorStore>()(
           state.skeleton.bones.push(mirroredBone)
         })
         state.isDirty = true
+        state.restPoseSnapshot = null
       })
       get().pushHistory(`Mirror bones (${axis}-axis)`)
+    },
+
+    setRestPoseSnapshot: (snapshot) => {
+      set((state) => {
+        state.restPoseSnapshot = snapshot
+      })
     },
 
     // Weight Actions
