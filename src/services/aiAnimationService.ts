@@ -11,7 +11,7 @@ interface AIGenerationResult {
 const SYSTEM_PROMPT = `You are an expert 3D animator. Your task is to generate keyframe animation data for a skeleton rig.
 
 You will receive:
-1. A list of bones with their names and current positions
+1. A list of bones with their names, parents, rest positions, and rest rotations
 2. An animation description/prompt
 
 You must output a JSON object with this exact structure:
@@ -38,13 +38,14 @@ You must output a JSON object with this exact structure:
 
 IMPORTANT RULES:
 1. Use ONLY bone names from the provided skeleton
-2. Rotations are quaternions [x, y, z, w] - use normalized values
-3. For natural motion, use small rotation values (typically -0.3 to 0.3 for x,y,z and close to 1 for w)
-4. Always include frame 0 as the starting pose
-5. Create smooth, natural-looking motion by distributing keyframes evenly
+2. Rotations are absolute world-space quaternions [x, y, z, w] and must be normalized
+3. Use the provided rest rotation as the neutral pose; apply small deltas around it unless the prompt requests big motion
+4. Prefer rotation keys. Only include position or scale keys if explicitly requested
+5. Always include frame 0 for every animated bone and keep frames within [0, frameCount - 1]
 6. For cyclic animations (walk, idle, breathe), make the last keyframe return close to the first
-7. Focus on the bones that would naturally move for the described animation
-8. Not every bone needs to be animated - only animate relevant bones
+7. Use 4-12 keyframes per animated bone, spaced to match motion beats
+8. Focus on the bones that would naturally move for the described animation
+9. Not every bone needs to be animated - only animate relevant bones
 
 Output ONLY the JSON object, no explanation or markdown.`
 
@@ -57,7 +58,7 @@ function buildSkeletonDescription(bones: BoneData[]): string {
     const parentName = bone.parentId
       ? bones.find(b => b.id === bone.parentId)?.name || 'unknown'
       : 'none (root)'
-    return `- "${bone.name}" (parent: ${parentName}, position: [${bone.position.map(p => p.toFixed(2)).join(', ')}])`
+    return `- "${bone.name}" (parent: ${parentName}, position: [${bone.position.map(p => p.toFixed(2)).join(', ')}], rotation: [${bone.rotation.map(r => r.toFixed(3)).join(', ')}], length: ${bone.length.toFixed(2)})`
   }).join('\n')
 
   return `Skeleton has ${bones.length} bones:\n${boneList}`
@@ -82,12 +83,12 @@ export async function generateAnimation(
   const skeletonDescription = buildSkeletonDescription(bones)
   const userMessage = `${skeletonDescription}\n\nCreate an animation for: "${prompt}"`
 
-  onProgress?.('Sending request to OpenAI GPT-5.2 (this may take up to 2 minutes)...')
+  onProgress?.('Sending request to OpenAI GPT-5.2 (this may take up to 10 minutes)...')
 
   try {
     // Create AbortController for timeout (120 seconds for GPT-5.2 with reasoning)
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 120000)
+    const timeoutId = setTimeout(() => controller.abort(), 600000)
 
     let response: Response
     try {
@@ -103,7 +104,7 @@ export async function generateAnimation(
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: userMessage },
           ],
-          reasoning_effort: 'low',
+          reasoning_effort: 'medium',
           max_completion_tokens: 16000,
         }),
         signal: controller.signal,
@@ -188,7 +189,7 @@ export async function generateAnimation(
       if (error.name === 'AbortError') {
         return {
           success: false,
-          error: 'Request timed out after 2 minutes. The AI may be overloaded - please try again.',
+          error: 'Request timed out after 10 minutes. The AI may be overloaded - please try again.',
         }
       }
       return {
@@ -211,6 +212,23 @@ function convertToAnimationClip(
   try {
     const tracks: AnimationTrack[] = []
     const boneNameToId = new Map(bones.map(b => [b.name.toLowerCase(), b.id]))
+    const boneById = new Map(bones.map(b => [b.id, b]))
+    const rawFps = Number(data.fps)
+    const fps = Number.isFinite(rawFps) ? Math.min(120, Math.max(1, rawFps)) : 30
+    let frameCount = Number.isFinite(Number(data.frameCount))
+      ? Math.max(2, Math.round(Number(data.frameCount)))
+      : 60
+    let maxFrame = 0
+
+    const normalizeInterpolation = (value: any): Keyframe['interpolation'] => {
+      return value === 'step' || value === 'bezier' || value === 'linear' ? value : 'linear'
+    }
+
+    const ensureFrameZero = (keyframes: Keyframe[], value: number[]) => {
+      if (!keyframes.some((kf) => kf.frame === 0)) {
+        keyframes.push({ frame: 0, value, interpolation: 'linear' })
+      }
+    }
 
     for (const boneAnim of data.bones || []) {
       const boneId = boneNameToId.get(boneAnim.boneName?.toLowerCase())
@@ -218,26 +236,34 @@ function convertToAnimationClip(
         console.warn(`Bone not found: ${boneAnim.boneName}`)
         continue
       }
+      const restBone = boneById.get(boneId)
 
       // Create rotation track
       const rotationKeyframes: Keyframe[] = []
 
       for (const kf of boneAnim.keyframes || []) {
-        if (kf.rotation) {
-          // Normalize the quaternion
-          const [x, y, z, w] = kf.rotation
+        if (kf.rotation && Array.isArray(kf.rotation) && kf.rotation.length === 4) {
+          const frame = Math.max(0, Math.round(Number(kf.frame)))
+          if (!Number.isFinite(frame)) continue
+          maxFrame = Math.max(maxFrame, frame)
+
+          const [x, y, z, w] = kf.rotation.map((v: any) => Number(v))
+          if (![x, y, z, w].every(Number.isFinite)) continue
           const len = Math.sqrt(x*x + y*y + z*z + w*w)
           const normalized = len > 0 ? [x/len, y/len, z/len, w/len] : [0, 0, 0, 1]
 
           rotationKeyframes.push({
-            frame: kf.frame,
+            frame,
             value: normalized,
-            interpolation: 'linear',
+            interpolation: normalizeInterpolation(kf.interpolation),
           })
         }
       }
 
       if (rotationKeyframes.length > 0) {
+        if (restBone) {
+          ensureFrameZero(rotationKeyframes, [...restBone.rotation])
+        }
         tracks.push({
           boneId,
           property: 'rotation' as KeyframeProperty,
@@ -248,16 +274,25 @@ function convertToAnimationClip(
       // Handle position keyframes if present
       const positionKeyframes: Keyframe[] = []
       for (const kf of boneAnim.keyframes || []) {
-        if (kf.position) {
+        if (kf.position && Array.isArray(kf.position) && kf.position.length === 3) {
+          const frame = Math.max(0, Math.round(Number(kf.frame)))
+          if (!Number.isFinite(frame)) continue
+          maxFrame = Math.max(maxFrame, frame)
+
+          const [x, y, z] = kf.position.map((v: any) => Number(v))
+          if (![x, y, z].every(Number.isFinite)) continue
           positionKeyframes.push({
-            frame: kf.frame,
-            value: kf.position,
-            interpolation: 'linear',
+            frame,
+            value: [x, y, z],
+            interpolation: normalizeInterpolation(kf.interpolation),
           })
         }
       }
 
       if (positionKeyframes.length > 0) {
+        if (restBone) {
+          ensureFrameZero(positionKeyframes, [...restBone.position])
+        }
         tracks.push({
           boneId,
           property: 'position' as KeyframeProperty,
@@ -271,11 +306,15 @@ function convertToAnimationClip(
       return null
     }
 
+    if (maxFrame + 1 > frameCount) {
+      frameCount = maxFrame + 1
+    }
+
     return {
       id: uuidv4(),
       name: data.animationName || 'AI Generated Animation',
-      fps: data.fps || 30,
-      frameCount: data.frameCount || 60,
+      fps,
+      frameCount,
       tracks,
     }
   } catch (error) {

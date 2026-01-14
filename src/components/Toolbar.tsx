@@ -2,7 +2,6 @@ import { useCallback } from 'react'
 import { useEditorStore } from '../store'
 import type { EditorMode, TransformMode, DisplayMode } from '../types'
 import * as THREE from 'three'
-import { analyzeModel, suggestBones } from '../utils/boneAutoSuggest'
 
 const modeButtons: { mode: EditorMode; icon: string; label: string }[] = [
   { mode: 'select', icon: '↖', label: 'Select' },
@@ -35,7 +34,7 @@ export function getLoadedModel(): THREE.Object3D | null {
   return loadedModelRef
 }
 
-export default function Toolbar() {
+export default function Toolbar({ onOpenAutoBones }: { onOpenAutoBones?: () => void }) {
   const {
     mode,
     setMode,
@@ -44,62 +43,15 @@ export default function Toolbar() {
     viewportSettings,
     updateViewportSettings,
     modelPath,
-    addBone,
-    skeleton,
   } = useEditorStore()
 
   const handleAutoSuggest = useCallback(() => {
-    if (!loadedModelRef) {
-      alert('Please load a model first')
+    if (onOpenAutoBones) {
+      onOpenAutoBones()
       return
     }
-
-    if (skeleton.bones.length > 0) {
-      if (!confirm('This will add bones to the existing skeleton. Continue?')) {
-        return
-      }
-    }
-
-    console.log('Analyzing model for auto-suggest...')
-
-    try {
-      // Analyze the loaded model
-      const analysis = analyzeModel(loadedModelRef)
-      console.log('Analysis result:', analysis)
-
-      // Generate bone suggestions
-      const suggestions = suggestBones(analysis)
-      console.log('Bone suggestions:', suggestions)
-
-      if (suggestions.length === 0) {
-        alert('Could not generate bone suggestions for this model')
-        return
-      }
-
-      // Create a map from suggestion index to bone ID
-      const boneIdMap = new Map<number, string>()
-
-      // Add bones based on suggestions
-      suggestions.forEach((suggestion, index) => {
-        const parentId = suggestion.parentIndex !== null
-          ? boneIdMap.get(suggestion.parentIndex) || null
-          : null
-
-        const boneId = addBone(suggestion.position, parentId)
-        boneIdMap.set(index, boneId)
-
-        // Update bone name
-        const { updateBone } = useEditorStore.getState()
-        updateBone(boneId, { name: suggestion.name })
-      })
-
-      console.log(`Added ${suggestions.length} bones`)
-      alert(`Auto-suggest created ${suggestions.length} bones`)
-    } catch (error) {
-      console.error('Auto-suggest error:', error)
-      alert('Failed to analyze model: ' + (error instanceof Error ? error.message : 'Unknown error'))
-    }
-  }, [addBone, skeleton.bones.length])
+    alert('Auto Bones dialog is not available.')
+  }, [onOpenAutoBones])
 
   const handleClearBones = useCallback(() => {
     const { skeleton, deleteBone } = useEditorStore.getState()

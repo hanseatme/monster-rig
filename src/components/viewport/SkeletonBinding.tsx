@@ -4,6 +4,7 @@ import * as THREE from 'three'
 import { useEditorStore } from '../../store'
 import { getLoadedModel } from '../Toolbar'
 import type { BoneData } from '../../types'
+import { calculateAutomaticWeightsForMesh } from '../../utils/weightCalculator'
 
 /**
  * This component handles real-time skeletal deformation.
@@ -15,6 +16,7 @@ export default function SkeletonBinding() {
   const skinnedMeshesRef = useRef<THREE.SkinnedMesh[]>([])
   const originalMeshesRef = useRef<THREE.Mesh[]>([])
   const lastStructureHashRef = useRef<string>('')
+  const lastAutoWeightHashRef = useRef<string>('')
   const isActiveRef = useRef<boolean>(false)
   const restPoseRef = useRef<Map<string, { position: [number, number, number], rotation: [number, number, number, number] }>>(new Map())
 
@@ -49,11 +51,18 @@ export default function SkeletonBinding() {
     })
     skinnedMeshesRef.current = []
     lastStructureHashRef.current = ''
+    lastAutoWeightHashRef.current = ''
   }, [])
 
   const rebuildSkinnedMeshes = useCallback((
     bones: BoneData[],
-    weightMap: Record<string, { vertexWeights: [number, number][][] }>
+    weightMap: Record<string, { vertexWeights: [number, number][][] }>,
+    autoWeightSettings: {
+      method: 'envelope' | 'heatmap' | 'nearest'
+      falloff: number
+      smoothIterations: number
+      neighborWeight: number
+    }
   ) => {
     const loadedModel = getLoadedModel()
     if (!loadedModel || bones.length === 0) {
@@ -62,13 +71,18 @@ export default function SkeletonBinding() {
     }
 
     const structureHash = bones.map(b => `${b.id}:${b.parentId}`).join('|')
-    if (structureHash === lastStructureHashRef.current && skinnedMeshesRef.current.length > 0) {
+    const autoWeightHash = `${autoWeightSettings.method}:${autoWeightSettings.falloff}:${autoWeightSettings.smoothIterations}:${autoWeightSettings.neighborWeight}`
+    if (structureHash === lastStructureHashRef.current &&
+        autoWeightHash === lastAutoWeightHashRef.current &&
+        skinnedMeshesRef.current.length > 0) {
       return // Already built for this structure
     }
-    lastStructureHashRef.current = structureHash
 
     // Clean up old skinned meshes first
     cleanupSkinnedMeshes()
+
+    lastStructureHashRef.current = structureHash
+    lastAutoWeightHashRef.current = autoWeightHash
 
     // Store rest pose for this skeleton
     storeRestPose(bones)
@@ -95,7 +109,8 @@ export default function SkeletonBinding() {
         rootBone,
         bones,
         weightMap,
-        boneIndexMap
+        boneIndexMap,
+        autoWeightSettings
       )
 
       if (skinnedMesh && mesh.parent) {
@@ -119,13 +134,13 @@ export default function SkeletonBinding() {
 
     const handleStateChange = () => {
       const shouldBeActive = checkShouldBeActive()
-      const { skeleton, weightMap } = useEditorStore.getState()
+      const { skeleton, weightMap, autoWeightSettings } = useEditorStore.getState()
 
       if (shouldBeActive && !isActiveRef.current) {
         // Transitioning to active state
         isActiveRef.current = true
         if (skeleton.bones.length > 0) {
-          rebuildSkinnedMeshes(skeleton.bones, weightMap)
+          rebuildSkinnedMeshes(skeleton.bones, weightMap, autoWeightSettings)
         }
       } else if (!shouldBeActive && isActiveRef.current) {
         // Transitioning to inactive state
@@ -153,8 +168,10 @@ export default function SkeletonBinding() {
         const structureHash = bones.map(b => `${b.id}:${b.parentId}`).join('|')
         const prevStructureHash = prevBones.map(b => `${b.id}:${b.parentId}`).join('|')
 
-        if (structureHash !== prevStructureHash) {
-          rebuildSkinnedMeshes(bones, state.weightMap)
+        const autoWeightHash = `${state.autoWeightSettings.method}:${state.autoWeightSettings.falloff}:${state.autoWeightSettings.smoothIterations}:${state.autoWeightSettings.neighborWeight}`
+
+        if (structureHash !== prevStructureHash || autoWeightHash !== lastAutoWeightHashRef.current) {
+          rebuildSkinnedMeshes(bones, state.weightMap, state.autoWeightSettings)
         }
       }
     })
@@ -175,7 +192,13 @@ export default function SkeletonBinding() {
     // Update each skinned mesh's skeleton with current bone transforms
     skinnedMeshesRef.current.forEach(skinnedMesh => {
       if (!skinnedMesh.skeleton) return
-      updateBoneTransforms(skinnedMesh.skeleton, editorSkeleton.bones, restPoseRef.current)
+      skinnedMesh.updateMatrixWorld(true)
+      updateBoneTransforms(
+        skinnedMesh.skeleton,
+        editorSkeleton.bones,
+        restPoseRef.current,
+        skinnedMesh.matrixWorld
+      )
     })
   })
 
@@ -271,7 +294,13 @@ function createSkinnedMesh(
   rootBone: THREE.Bone,
   editorBones: BoneData[],
   weightMap: Record<string, { vertexWeights: [number, number][][] }>,
-  boneIndexMap: Map<string, number>
+  boneIndexMap: Map<string, number>,
+  autoWeightSettings: {
+    method: 'envelope' | 'heatmap' | 'nearest'
+    falloff: number
+    smoothIterations: number
+    neighborWeight: number
+  }
 ): THREE.SkinnedMesh | null {
   try {
     const geometry = mesh.geometry.clone()
@@ -288,14 +317,42 @@ function createSkinnedMesh(
     const meshWeights = weightMap[mesh.name]
     const vertexCount = geometry.attributes.position.count
 
+    const needsAutoWeights = !meshWeights ||
+      meshWeights.vertexWeights.length < vertexCount ||
+      meshWeights.vertexWeights.some((w) => !w || w.length === 0)
+
+    let autoWeights: [number, number][][] | null = null
+    const getAutoWeights = () => {
+      if (!autoWeights) {
+        autoWeights = calculateAutomaticWeightsForMesh(mesh, editorBones, {
+          method: autoWeightSettings.method,
+          falloff: autoWeightSettings.falloff,
+          smoothIterations: autoWeightSettings.smoothIterations,
+          neighborWeight: autoWeightSettings.neighborWeight,
+        })
+      }
+      return autoWeights
+    }
+
+    const mapToSkeletonIndices = (weights: [number, number][]) => {
+      return weights.map(([boneIdx, weight]) => {
+        const bone = editorBones[boneIdx]
+        const mapped = bone ? boneIndexMap.get(bone.id) ?? boneIdx : boneIdx
+        return [mapped, weight] as [number, number]
+      })
+    }
+
     const skinIndices: number[] = []
     const skinWeights: number[] = []
 
     for (let i = 0; i < vertexCount; i++) {
       let weights: [number, number][] = []
 
-      if (meshWeights && meshWeights.vertexWeights[i]) {
-        weights = [...meshWeights.vertexWeights[i]]
+      if (meshWeights && meshWeights.vertexWeights[i]?.length) {
+        weights = mapToSkeletonIndices(meshWeights.vertexWeights[i])
+      } else if (needsAutoWeights) {
+        const auto = getAutoWeights()[i] || []
+        weights = mapToSkeletonIndices(auto)
       }
 
       // Auto-weight to nearest bone if no weights defined
@@ -397,8 +454,13 @@ function cloneBoneHierarchy(bone: THREE.Bone): THREE.Bone {
 function updateBoneTransforms(
   skeleton: THREE.Skeleton,
   editorBones: BoneData[],
-  restPose: Map<string, { position: [number, number, number], rotation: [number, number, number, number] }>
+  restPose: Map<string, { position: [number, number, number], rotation: [number, number, number, number] }>,
+  meshWorldMatrix: THREE.Matrix4
 ) {
+  const meshWorldInverse = meshWorldMatrix.clone().invert()
+  const meshWorldRotation = new THREE.Quaternion().setFromRotationMatrix(meshWorldMatrix)
+  const meshWorldRotationInv = meshWorldRotation.clone().invert()
+
   editorBones.forEach((editorBone) => {
     const threeBone = skeleton.bones.find(b => b.userData.editorId === editorBone.id)
     if (!threeBone) return
@@ -411,12 +473,18 @@ function updateBoneTransforms(
         const currentPos = new THREE.Vector3(...editorBone.position)
         const currentRot = new THREE.Quaternion(...editorBone.rotation)
 
-        // Apply current position and rotation
-        threeBone.position.copy(currentPos)
-        threeBone.quaternion.copy(currentRot)
+        const localPos = currentPos.applyMatrix4(meshWorldInverse)
+        const localRot = meshWorldRotationInv.clone().multiply(currentRot)
+
+        // Apply current position and rotation (mesh-local)
+        threeBone.position.copy(localPos)
+        threeBone.quaternion.copy(localRot)
       } else {
-        threeBone.position.set(...editorBone.position)
-        threeBone.quaternion.set(...editorBone.rotation)
+        const currentPos = new THREE.Vector3(...editorBone.position).applyMatrix4(meshWorldInverse)
+        const currentRot = new THREE.Quaternion(...editorBone.rotation)
+        const localRot = meshWorldRotationInv.clone().multiply(currentRot)
+        threeBone.position.copy(currentPos)
+        threeBone.quaternion.copy(localRot)
       }
     } else {
       // For child bones, calculate local transform relative to current parent

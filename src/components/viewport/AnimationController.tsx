@@ -6,7 +6,8 @@ import type { Keyframe, BoneData } from '../../types'
 
 function interpolateValue(
   keyframes: Keyframe[],
-  frame: number
+  frame: number,
+  property: 'position' | 'rotation' | 'scale'
 ): number[] | null {
   if (keyframes.length === 0) return null
 
@@ -45,21 +46,20 @@ function interpolateValue(
   const t = (frame - prevKf.frame) / (nextKf.frame - prevKf.frame)
   const interpolation = prevKf.interpolation
 
-  switch (interpolation) {
-    case 'step':
-      return prevKf.value
-
-    case 'linear':
-      return prevKf.value.map((v, i) => v + (nextKf!.value[i] - v) * t)
-
-    case 'bezier':
-      // Simplified bezier - use smooth step
-      const smoothT = t * t * (3 - 2 * t)
-      return prevKf.value.map((v, i) => v + (nextKf!.value[i] - v) * smoothT)
-
-    default:
-      return prevKf.value
+  if (interpolation === 'step') {
+    return prevKf.value
   }
+
+  const blend = interpolation === 'bezier' ? t * t * (3 - 2 * t) : t
+
+  if (property === 'rotation') {
+    const q1 = new THREE.Quaternion(prevKf.value[0], prevKf.value[1], prevKf.value[2], prevKf.value[3])
+    const q2 = new THREE.Quaternion(nextKf!.value[0], nextKf!.value[1], nextKf!.value[2], nextKf!.value[3])
+    q1.slerp(q2, blend)
+    return [q1.x, q1.y, q1.z, q1.w]
+  }
+
+  return prevKf.value.map((v, i) => v + (nextKf!.value[i] - v) * blend)
 }
 
 // Store rest pose for FK calculations
@@ -68,6 +68,7 @@ interface RestPose {
     position: [number, number, number]
     rotation: [number, number, number, number]
     localOffset: THREE.Vector3 // offset from parent in parent's local space
+    localRotation: THREE.Quaternion // rotation relative to parent in rest pose
   }
 }
 
@@ -100,18 +101,51 @@ function calculateLocalOffset(
   return worldOffset
 }
 
+function calculateLocalRotation(
+  bone: BoneData,
+  parentBone: BoneData | undefined
+): THREE.Quaternion {
+  const boneRotation = new THREE.Quaternion(
+    bone.rotation[0],
+    bone.rotation[1],
+    bone.rotation[2],
+    bone.rotation[3]
+  )
+
+  if (!parentBone) {
+    return boneRotation
+  }
+
+  const parentRotation = new THREE.Quaternion(
+    parentBone.rotation[0],
+    parentBone.rotation[1],
+    parentBone.rotation[2],
+    parentBone.rotation[3]
+  )
+
+  const inverseParentRotation = parentRotation.clone().invert()
+  return inverseParentRotation.multiply(boneRotation)
+}
+
 // Apply Forward Kinematics - propagate parent rotations to children
 function applyForwardKinematics(
   bones: BoneData[],
   restPose: RestPose,
-  updateBone: (id: string, data: Partial<BoneData>) => void
+  updateBone: (id: string, data: Partial<BoneData>) => void,
+  animatedPositionIds: Set<string>,
+  animatedRotationIds: Set<string>
 ) {
   // Build parent-children map
   const childrenMap = new Map<string | null, BoneData[]>()
+  const currentTransforms = new Map<string, { position: THREE.Vector3; rotation: THREE.Quaternion }>()
   bones.forEach(bone => {
     const children = childrenMap.get(bone.parentId) || []
     children.push(bone)
     childrenMap.set(bone.parentId, children)
+    currentTransforms.set(bone.id, {
+      position: new THREE.Vector3(...bone.position),
+      rotation: new THREE.Quaternion(...bone.rotation),
+    })
   })
 
   // Process from root to leaves (BFS)
@@ -128,22 +162,40 @@ function applyForwardKinematics(
       const childRest = restPose[child.id]
 
       if (parentRest && childRest) {
-        // Get current parent position and rotation
-        const currentBone = bones.find(b => b.id === bone.id)
-        if (!currentBone) continue
+        const parentTransform = currentTransforms.get(bone.id)
+        if (!parentTransform) continue
 
-        const parentPos = new THREE.Vector3(...currentBone.position)
-        const parentRot = new THREE.Quaternion(...currentBone.rotation)
+        const parentPos = parentTransform.position
+        const parentRot = parentTransform.rotation
 
-        // Calculate child's new world position
-        const localOffset = childRest.localOffset.clone()
-        localOffset.applyQuaternion(parentRot)
+        if (!animatedPositionIds.has(child.id)) {
+          // Calculate child's new world position
+          const localOffset = childRest.localOffset.clone()
+          localOffset.applyQuaternion(parentRot)
 
-        const newChildPos = parentPos.clone().add(localOffset)
+          const newChildPos = parentPos.clone().add(localOffset)
+          const existing = currentTransforms.get(child.id)
+          currentTransforms.set(child.id, {
+            position: newChildPos.clone(),
+            rotation: existing?.rotation || new THREE.Quaternion(),
+          })
 
-        updateBone(child.id, {
-          position: [newChildPos.x, newChildPos.y, newChildPos.z]
-        })
+          updateBone(child.id, {
+            position: [newChildPos.x, newChildPos.y, newChildPos.z]
+          })
+        }
+
+        if (!animatedRotationIds.has(child.id)) {
+          const newChildRot = parentRot.clone().multiply(childRest.localRotation)
+          const existing = currentTransforms.get(child.id)
+          currentTransforms.set(child.id, {
+            position: existing?.position || new THREE.Vector3(),
+            rotation: newChildRot.clone(),
+          })
+          updateBone(child.id, {
+            rotation: [newChildRot.x, newChildRot.y, newChildRot.z, newChildRot.w]
+          })
+        }
       }
 
       queue.push(child)
@@ -170,7 +222,8 @@ export default function AnimationController() {
       restPose[bone.id] = {
         position: [...bone.position] as [number, number, number],
         rotation: [...bone.rotation] as [number, number, number, number],
-        localOffset: calculateLocalOffset(bone, parent)
+        localOffset: calculateLocalOffset(bone, parent),
+        localRotation: calculateLocalRotation(bone, parent)
       }
     })
 
@@ -195,7 +248,8 @@ export default function AnimationController() {
     }
 
     // First pass: apply direct animation values (rotations)
-    const animatedBoneIds = new Set<string>()
+    const animatedPositionIds = new Set<string>()
+    const animatedRotationIds = new Set<string>()
 
     currentAnimation.tracks.forEach((track) => {
       const bone = skeleton.bones.find((b) => b.id === track.boneId)
@@ -204,16 +258,17 @@ export default function AnimationController() {
       // Skip if track has no keyframes
       if (track.keyframes.length === 0) return
 
-      const value = interpolateValue(track.keyframes, frame)
+      const value = interpolateValue(track.keyframes, frame, track.property)
       if (!value) return
 
       switch (track.property) {
         case 'position':
           updateBone(bone.id, { position: value as [number, number, number] })
+          animatedPositionIds.add(bone.id)
           break
         case 'rotation':
           updateBone(bone.id, { rotation: value as [number, number, number, number] })
-          animatedBoneIds.add(bone.id)
+          animatedRotationIds.add(bone.id)
           break
         case 'scale':
           updateBone(bone.id, { scale: value as [number, number, number] })
@@ -222,13 +277,16 @@ export default function AnimationController() {
     })
 
     // Second pass: apply Forward Kinematics to update child positions
-    if (animatedBoneIds.size > 0 && Object.keys(restPoseRef.current).length > 0) {
+    if ((animatedPositionIds.size > 0 || animatedRotationIds.size > 0) &&
+        Object.keys(restPoseRef.current).length > 0) {
       // Get fresh skeleton state after rotation updates
       const freshState = useEditorStore.getState()
       applyForwardKinematics(
         freshState.skeleton.bones,
         restPoseRef.current,
-        updateBone
+        updateBone,
+        animatedPositionIds,
+        animatedRotationIds
       )
     }
   }, [initializeRestPose])

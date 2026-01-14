@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, useMemo } from 'react'
+import { useCallback, useRef, useState, useMemo, useEffect } from 'react'
 import { useEditorStore } from '../../store'
 
 // Keyframe selection state
@@ -33,6 +33,22 @@ export default function Timeline() {
   const [selectedKeyframes, setSelectedKeyframes] = useState<SelectedKeyframe[]>([])
 
   const currentAnimation = animations.find((a) => a.id === currentAnimationId)
+
+  useEffect(() => {
+    if (!currentAnimation) return
+
+    const updates: Partial<typeof timeline> = {}
+    if (timeline.fps !== currentAnimation.fps) {
+      updates.fps = currentAnimation.fps
+    }
+    if (timeline.frameEnd !== currentAnimation.frameCount) {
+      updates.frameEnd = currentAnimation.frameCount
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updateTimeline(updates)
+    }
+  }, [currentAnimation, timeline.fps, timeline.frameEnd, updateTimeline])
 
   // Get all keyframes organized by bone
   const boneKeyframesMap = useMemo(() => {

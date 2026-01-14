@@ -1,11 +1,18 @@
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import type { ProjectData, BoneData, AnimationClip as AppAnimationClip } from '../types'
+import { calculateAutomaticWeightsForMesh } from './weightCalculator'
 
 interface ExportOptions {
   binary: boolean
   embedAnimations: boolean
   optimizeMeshes: boolean
+  autoWeightSettings?: {
+    method: 'envelope' | 'heatmap' | 'nearest'
+    falloff: number
+    smoothIterations: number
+    neighborWeight: number
+  }
 }
 
 export async function exportToGLB(
@@ -111,7 +118,8 @@ export async function exportToGLB(
         skeleton,
         rootBone,
         projectData,
-        boneMap
+        boneMap,
+        options.autoWeightSettings
       )
       if (skinnedMesh) {
         exportScene.add(skinnedMesh)
@@ -280,7 +288,13 @@ function createExportSkinnedMesh(
   skeleton: THREE.Skeleton,
   _rootBone: THREE.Bone,
   projectData: ProjectData,
-  boneMap: Map<string, THREE.Bone>
+  boneMap: Map<string, THREE.Bone>,
+  autoWeightSettings?: {
+    method: 'envelope' | 'heatmap' | 'nearest'
+    falloff: number
+    smoothIterations: number
+    neighborWeight: number
+  }
 ): THREE.SkinnedMesh | null {
   try {
     const geometry = mesh.geometry.clone()
@@ -323,6 +337,37 @@ function createExportSkinnedMesh(
 
     const vertexCount = geometry.attributes.position.count
 
+    const needsAutoWeights = !meshWeights ||
+      meshWeights.vertexWeights.length < vertexCount ||
+      meshWeights.vertexWeights.some((w) => !w || w.length === 0)
+
+    let autoWeights: [number, number][][] | null = null
+    const getAutoWeights = () => {
+      if (!autoWeights) {
+        const settings = autoWeightSettings || {
+          method: 'envelope' as const,
+          falloff: 2.5,
+          smoothIterations: 2,
+          neighborWeight: 0.6,
+        }
+        autoWeights = calculateAutomaticWeightsForMesh(mesh, projectData.skeleton.bones, {
+          method: settings.method,
+          falloff: settings.falloff,
+          smoothIterations: settings.smoothIterations,
+          neighborWeight: settings.neighborWeight,
+        })
+      }
+      return autoWeights
+    }
+
+    const mapToSkeletonIndices = (weights: [number, number][]) => {
+      return weights.map(([boneIdx, weight]) => {
+        const bone = projectData.skeleton.bones[boneIdx]
+        const mapped = bone ? boneIndexMap.get(bone.id) ?? boneIdx : boneIdx
+        return [mapped, weight] as [number, number]
+      })
+    }
+
     // Create skin indices and weights arrays
     const skinIndices: number[] = []
     const skinWeights: number[] = []
@@ -331,10 +376,10 @@ function createExportSkinnedMesh(
       let weights: [number, number][] = []
 
       if (meshWeights && meshWeights.vertexWeights[i]) {
-        // Convert bone IDs to indices
-        weights = meshWeights.vertexWeights[i].map(([boneIdx, weight]) => {
-          return [boneIdx, weight] as [number, number]
-        })
+        weights = mapToSkeletonIndices(meshWeights.vertexWeights[i])
+      } else if (needsAutoWeights) {
+        const auto = getAutoWeights()[i] || []
+        weights = mapToSkeletonIndices(auto)
       }
 
       // If no weights defined, bind to nearest bone based on vertex position
@@ -437,6 +482,7 @@ function buildExportAnimation(
 
   const tracks: THREE.KeyframeTrack[] = []
   const boneDataMap = new Map(bones.map((b) => [b.id, b]))
+  const fps = animData.fps > 0 ? animData.fps : 30
 
   // Build rest pose map
   const restPoseMap = new Map<string, {
@@ -497,18 +543,23 @@ function buildExportAnimation(
       return after.value
     }
 
-    // Interpolate
+    const interpolation = before.interpolation || 'linear'
+    if (interpolation === 'step') {
+      return before.value
+    }
+
     const t = (frame - before.frame) / (after.frame - before.frame)
+    const blend = interpolation === 'bezier' ? t * t * (3 - 2 * t) : t
 
     if (property === 'rotation') {
       // Slerp for quaternions
       const q1 = new THREE.Quaternion(before.value[0], before.value[1], before.value[2], before.value[3])
       const q2 = new THREE.Quaternion(after.value[0], after.value[1], after.value[2], after.value[3])
-      q1.slerp(q2, t)
+      q1.slerp(q2, blend)
       return [q1.x, q1.y, q1.z, q1.w]
     } else {
       // Linear interpolation for position/scale
-      return before.value.map((v, i) => v + (after.value[i] - v) * t)
+      return before.value.map((v, i) => v + (after.value[i] - v) * blend)
     }
   }
 
@@ -587,27 +638,52 @@ function buildExportAnimation(
 
     // Sort keyframes by frame
     const sortedKeyframes = [...track.keyframes].sort((a, b) => a.frame - b.frame)
+    const usesBezier = sortedKeyframes.some((kf) => kf.interpolation === 'bezier')
+    const usesStep = sortedKeyframes.some((kf) => kf.interpolation === 'step')
+    const shouldBake = usesBezier
+    const totalFrames = Math.max(1, Math.round(animData.frameCount))
+    const frameList = shouldBake
+      ? Array.from({ length: totalFrames + 1 }, (_, i) => i)
+      : sortedKeyframes.map((kf) => kf.frame)
+    const restPose = restPoseMap.get(track.boneId)
 
-    sortedKeyframes.forEach((kf) => {
-      times.push(kf.frame / animData.fps)
+    frameList.forEach((frame, idx) => {
+      let worldValue: number[] | null = null
 
-      // Convert world-space keyframe values to local-space using parent's state at this frame
+      if (shouldBake) {
+        worldValue = getAnimatedValueAtFrame(track.boneId, track.property, frame)
+        if (!worldValue && restPose) {
+          worldValue = track.property === 'rotation'
+            ? [restPose.worldRot.x, restPose.worldRot.y, restPose.worldRot.z, restPose.worldRot.w]
+            : track.property === 'position'
+              ? [restPose.worldPos.x, restPose.worldPos.y, restPose.worldPos.z]
+              : [1, 1, 1]
+        }
+      } else {
+        const kf = sortedKeyframes[idx]
+        worldValue = kf?.value || null
+      }
+
+      if (!worldValue) return
+
+      times.push(frame / fps)
+
+      // Convert world-space values to local-space using parent's state at this frame
       switch (track.property) {
         case 'position': {
-          const worldPos = new THREE.Vector3(kf.value[0], kf.value[1], kf.value[2])
-          const localPos = worldToLocalPosition(track.boneId, worldPos, kf.frame)
+          const worldPos = new THREE.Vector3(worldValue[0], worldValue[1], worldValue[2])
+          const localPos = worldToLocalPosition(track.boneId, worldPos, frame)
           values.push(localPos.x, localPos.y, localPos.z)
           break
         }
         case 'rotation': {
-          const worldRot = new THREE.Quaternion(kf.value[0], kf.value[1], kf.value[2], kf.value[3])
-          const localRot = worldToLocalRotation(track.boneId, worldRot, kf.frame)
+          const worldRot = new THREE.Quaternion(worldValue[0], worldValue[1], worldValue[2], worldValue[3])
+          const localRot = worldToLocalRotation(track.boneId, worldRot, frame)
           values.push(localRot.x, localRot.y, localRot.z, localRot.w)
           break
         }
         case 'scale': {
-          // Scale is usually local anyway
-          values.push(...kf.value)
+          values.push(...worldValue)
           break
         }
       }
@@ -637,8 +713,11 @@ function buildExportAnimation(
 
     try {
       const keyframeTrack = new TrackType(trackName, times, values)
+      if (usesStep && !shouldBake) {
+        keyframeTrack.setInterpolation(THREE.InterpolateDiscrete)
+      }
       tracks.push(keyframeTrack)
-      console.log(`  Track: ${trackName}, ${times.length} keyframes (world→local, frame-aware)`)
+      console.log(`  Track: ${trackName}, ${times.length} keyframes (world->local, frame-aware)`)
     } catch (e) {
       console.error(`Failed to create track ${trackName}:`, e)
     }
@@ -646,7 +725,7 @@ function buildExportAnimation(
 
   if (tracks.length === 0) return null
 
-  const duration = animData.frameCount / animData.fps
+  const duration = animData.frameCount / fps
 
   return new THREE.AnimationClip(
     animData.name,

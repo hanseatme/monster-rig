@@ -8,6 +8,7 @@ import StatusBar from './StatusBar'
 import DropZone from './DropZone'
 import SettingsDialog from './dialogs/SettingsDialog'
 import AIAnimationDialog from './dialogs/AIAnimationDialog'
+import AutoBonesDialog from './dialogs/AutoBonesDialog'
 import { useEditorStore } from '../store'
 import { useElectronEvents } from '../hooks/useElectronEvents'
 
@@ -27,6 +28,7 @@ export default function Layout() {
   // Dialog states
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isAIAnimationOpen, setIsAIAnimationOpen] = useState(false)
+  const [isAutoBonesOpen, setIsAutoBonesOpen] = useState(false)
 
   // Expose dialog openers for child components
   const openSettings = useCallback(() => setIsSettingsOpen(true), [])
@@ -69,7 +71,7 @@ export default function Layout() {
       onMouseLeave={handleMouseUp}
     >
       {/* Toolbar */}
-      <Toolbar />
+      <Toolbar onOpenAutoBones={() => setIsAutoBonesOpen(true)} />
 
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden">
@@ -136,6 +138,10 @@ export default function Layout() {
         isOpen={isAIAnimationOpen}
         onClose={() => setIsAIAnimationOpen(false)}
         onOpenSettings={openSettings}
+      />
+      <AutoBonesDialog
+        isOpen={isAutoBonesOpen}
+        onClose={() => setIsAutoBonesOpen(false)}
       />
     </div>
   )

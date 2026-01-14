@@ -12,6 +12,7 @@ import type {
   ViewportSettings,
   TimelineState,
   WeightPaintSettings,
+  AutoWeightSettings,
   Selection,
   HistoryEntry,
   HistoryState,
@@ -19,7 +20,9 @@ import type {
   ProjectData,
   InterpolationType,
   KeyframeProperty,
+  AutoBoneSettings,
 } from '../types'
+import { DEFAULT_AUTO_BONE_SETTINGS, normalizeAutoBoneSettings } from '../utils/autoBoneSettings'
 
 interface EditorStore {
   // Project State
@@ -45,6 +48,8 @@ interface EditorStore {
   viewportSettings: ViewportSettings
   timeline: TimelineState
   weightPaintSettings: WeightPaintSettings
+  autoWeightSettings: AutoWeightSettings
+  autoBoneSettings: AutoBoneSettings
 
   // Mesh Hierarchy
   meshHierarchy: MeshNode[]
@@ -96,6 +101,8 @@ interface EditorStore {
   updateViewportSettings: (settings: Partial<ViewportSettings>) => void
   updateTimeline: (state: Partial<TimelineState>) => void
   updateWeightPaintSettings: (settings: Partial<WeightPaintSettings>) => void
+  updateAutoWeightSettings: (settings: Partial<AutoWeightSettings>) => void
+  updateAutoBoneSettings: (settings: Partial<AutoBoneSettings>) => void
 
   // Actions - Mesh Hierarchy
   setMeshHierarchy: (hierarchy: MeshNode[]) => void
@@ -168,6 +175,13 @@ const getInitialState = () => ({
     brushStrength: 0.5,
     brushMode: 'add' as const,
   },
+  autoWeightSettings: {
+    method: 'envelope' as const,
+    falloff: 2.5,
+    smoothIterations: 2,
+    neighborWeight: 0.6,
+  },
+  autoBoneSettings: { ...DEFAULT_AUTO_BONE_SETTINGS },
   meshHierarchy: [],
   history: [],
   historyIndex: -1,
@@ -504,6 +518,32 @@ export const useEditorStore = create<EditorStore>()(
     updateWeightPaintSettings: (settings) => {
       set((state) => {
         Object.assign(state.weightPaintSettings, settings)
+      })
+    },
+
+    updateAutoWeightSettings: (settings) => {
+      set((state) => {
+        const next = { ...state.autoWeightSettings, ...settings }
+        const falloff = Math.min(6, Math.max(0.1, next.falloff))
+        const smoothIterations = Math.min(10, Math.max(0, Math.round(next.smoothIterations)))
+        const neighborWeight = Math.min(1, Math.max(0, next.neighborWeight))
+        const method = next.method === 'heatmap' || next.method === 'nearest' ? next.method : 'envelope'
+
+        state.autoWeightSettings = {
+          method,
+          falloff,
+          smoothIterations,
+          neighborWeight,
+        }
+      })
+    },
+
+    updateAutoBoneSettings: (settings) => {
+      set((state) => {
+        state.autoBoneSettings = normalizeAutoBoneSettings({
+          ...state.autoBoneSettings,
+          ...settings,
+        })
       })
     },
 

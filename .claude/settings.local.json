@@ -6,7 +6,11 @@
       "Bash(npm run dev:*)",
       "Bash(npm run build:*)",
       "Bash(git init:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit: Monster Rigger - 3D rigging and animation tool\n\nFeatures:\n- Electron + React + Three.js based desktop application\n- GLB/glTF model import and export\n- Bone creation and hierarchy management\n- Weight painting system\n- Animation timeline with keyframe support\n- AI-powered animation generation \\(Claude/OpenAI\\)\n- Auto-save and project management\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git remote add:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)"
     ]
   }
 }

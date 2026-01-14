@@ -1,8 +1,9 @@
 import * as THREE from 'three'
-import type { BoneData } from '../types'
+import type { BoneData, AutoBoneSettings } from '../types'
 import { v4 as uuidv4 } from 'uuid'
+import { normalizeAutoBoneSettings } from './autoBoneSettings'
 
-interface BoneSuggestion {
+export interface BoneSuggestion {
   position: [number, number, number]
   name: string
   parentIndex: number | null
@@ -17,11 +18,26 @@ interface MeshAnalysis {
   size: THREE.Vector3
 }
 
+export interface MeshAnalysisSummary {
+  center: [number, number, number]
+  size: [number, number, number]
+  boundingBox: {
+    min: [number, number, number]
+    max: [number, number, number]
+  }
+  extremities: [number, number, number][]
+  symmetryAxis: 'x' | 'y' | 'z' | null
+}
+
 /**
  * Analyze a 3D object (model) to find good bone positions
  * Works with world coordinates after model transformations
  */
-export function analyzeModel(object: THREE.Object3D): MeshAnalysis {
+export function analyzeModel(
+  object: THREE.Object3D,
+  options?: Partial<AutoBoneSettings>
+): MeshAnalysis {
+  const settings = normalizeAutoBoneSettings(options)
   // Collect all vertices in WORLD coordinates
   const worldVertices: THREE.Vector3[] = []
 
@@ -59,7 +75,7 @@ export function analyzeModel(object: THREE.Object3D): MeshAnalysis {
       center,
       boundingBox: box,
       extremities: [],
-      symmetryAxis: 'x',
+      symmetryAxis: settings.symmetryAxis === 'auto' ? 'x' : settings.symmetryAxis,
       size,
     }
   }
@@ -72,10 +88,10 @@ export function analyzeModel(object: THREE.Object3D): MeshAnalysis {
   const size = boundingBox.getSize(new THREE.Vector3())
 
   // Find extremities using PCA-like approach
-  const extremities = findExtremities(worldVertices, center, size)
+  const extremities = findExtremities(worldVertices, center, size, settings)
 
   // Detect symmetry axis
-  const symmetryAxis = detectSymmetryAxis(worldVertices, center, size)
+  const symmetryAxis = detectSymmetryAxis(worldVertices, center, size, settings.symmetryAxis)
 
   return {
     center,
@@ -86,17 +102,31 @@ export function analyzeModel(object: THREE.Object3D): MeshAnalysis {
   }
 }
 
+export function summarizeAnalysis(analysis: MeshAnalysis): MeshAnalysisSummary {
+  return {
+    center: [analysis.center.x, analysis.center.y, analysis.center.z],
+    size: [analysis.size.x, analysis.size.y, analysis.size.z],
+    boundingBox: {
+      min: [analysis.boundingBox.min.x, analysis.boundingBox.min.y, analysis.boundingBox.min.z],
+      max: [analysis.boundingBox.max.x, analysis.boundingBox.max.y, analysis.boundingBox.max.z],
+    },
+    extremities: analysis.extremities.map((ext) => [ext.x, ext.y, ext.z]),
+    symmetryAxis: analysis.symmetryAxis,
+  }
+}
+
 /**
  * Find extremity points (tips of limbs, tail, head, etc.)
  */
 function findExtremities(
   vertices: THREE.Vector3[],
   center: THREE.Vector3,
-  size: THREE.Vector3
+  size: THREE.Vector3,
+  settings: AutoBoneSettings
 ): THREE.Vector3[] {
   // Use adaptive clustering threshold based on model size
   const avgSize = (size.x + size.y + size.z) / 3
-  const clusterThreshold = avgSize * 0.15
+  const clusterThreshold = avgSize * settings.extremityClusterFactor
 
   // Find vertices far from center
   const withDistance = vertices.map(v => ({
@@ -108,14 +138,14 @@ function findExtremities(
   withDistance.sort((a, b) => b.distance - a.distance)
 
   // Take top 5% of furthest vertices
-  const topCount = Math.max(20, Math.floor(vertices.length * 0.05))
+  const topCount = Math.max(20, Math.floor(vertices.length * settings.extremityTopPercent))
   const candidates = withDistance.slice(0, topCount).map(d => d.vertex)
 
   // Cluster the extremities
   const clusters = clusterPoints(candidates, clusterThreshold)
 
-  // Return cluster centers (max 8 extremities)
-  return clusters.slice(0, 8).map(cluster => {
+  // Return cluster centers (limited by settings)
+  return clusters.slice(0, settings.maxExtremities).map(cluster => {
     const clusterCenter = new THREE.Vector3()
     cluster.forEach(p => clusterCenter.add(p))
     return clusterCenter.divideScalar(cluster.length)
@@ -166,8 +196,12 @@ function clusterPoints(
 function detectSymmetryAxis(
   vertices: THREE.Vector3[],
   center: THREE.Vector3,
-  size: THREE.Vector3
+  size: THREE.Vector3,
+  axisOverride: AutoBoneSettings['symmetryAxis']
 ): 'x' | 'y' | 'z' | null {
+  if (axisOverride !== 'auto') {
+    return axisOverride
+  }
   // Sample a subset of vertices for performance
   const sampleSize = Math.min(500, vertices.length)
   const step = Math.max(1, Math.floor(vertices.length / sampleSize))
@@ -211,17 +245,21 @@ function detectSymmetryAxis(
 /**
  * Generate bone suggestions based on mesh analysis
  */
-export function suggestBones(analysis: MeshAnalysis): BoneSuggestion[] {
+export function suggestBones(
+  analysis: MeshAnalysis,
+  options?: Partial<AutoBoneSettings>
+): BoneSuggestion[] {
+  const settings = normalizeAutoBoneSettings(options)
   const suggestions: BoneSuggestion[] = []
   const { center, extremities, size } = analysis
 
   // Calculate appropriate bone length based on model size
   const avgSize = (size.x + size.y + size.z) / 3
-  const boneSpacing = avgSize * 0.2 // About 5 bones across the model
+  const boneSpacing = Math.max(avgSize * settings.boneSpacingFactor, 0.001)
 
   // 1. Root bone at center (slightly lower for creatures)
   const rootPos = center.clone()
-  rootPos.y -= size.y * 0.1 // Slightly below center
+  rootPos.y -= size.y * settings.rootYOffsetFactor
 
   suggestions.push({
     position: [rootPos.x, rootPos.y, rootPos.z],
@@ -233,7 +271,10 @@ export function suggestBones(analysis: MeshAnalysis): BoneSuggestion[] {
   // 2. Spine/body bones along the longest axis
   const longestAxis = size.x > size.z ? 'x' : 'z'
   const spineLength = longestAxis === 'x' ? size.x : size.z
-  const spineSegments = Math.max(2, Math.min(5, Math.ceil(spineLength / boneSpacing)))
+  const spineSegments = Math.max(
+    settings.spineMinSegments,
+    Math.min(settings.spineMaxSegments, Math.ceil(spineLength / boneSpacing))
+  )
 
   let lastSpineIdx = 0
   for (let i = 1; i <= spineSegments; i++) {
@@ -256,36 +297,45 @@ export function suggestBones(analysis: MeshAnalysis): BoneSuggestion[] {
   }
 
   // 3. Bones for extremities (limbs, tail, etc.)
-  extremities.forEach((extremity, extIndex) => {
+  const limitedExtremities = extremities.slice(0, settings.maxExtremities)
+  limitedExtremities.forEach((extremity, extIndex) => {
     const direction = extremity.clone().sub(center)
     const distance = direction.length()
 
-    if (distance < avgSize * 0.2) return // Skip if too close to center
+    if (distance < avgSize * settings.extremityMinDistanceFactor) return
 
     direction.normalize()
 
     // Determine bone chain name based on direction
     let baseName = ''
     const absY = Math.abs(direction.y)
-    const absX = Math.abs(direction.x)
-    const absZ = Math.abs(direction.z)
+    const symmetryAxis = analysis.symmetryAxis || 'x'
+    const sideAxis = symmetryAxis === 'z' ? 'z' : 'x'
+    const frontAxis = symmetryAxis === 'z' ? 'x' : 'z'
+    const sideComponent = sideAxis === 'x' ? direction.x : direction.z
+    const frontComponent = frontAxis === 'x' ? direction.x : direction.z
+    const absSide = Math.abs(sideComponent)
+    const absFront = Math.abs(frontComponent)
 
     if (absY > 0.7) {
       // Vertical
       baseName = direction.y > 0 ? 'head' : 'tail'
-    } else if (absX > absZ) {
+    } else if (absSide >= absFront) {
       // Side limb
-      baseName = direction.x > 0 ? 'limb_right' : 'limb_left'
+      baseName = sideComponent > 0 ? 'limb_right' : 'limb_left'
     } else {
       // Front/back limb
-      baseName = direction.z > 0 ? 'limb_front' : 'limb_back'
+      baseName = frontComponent > 0 ? 'limb_front' : 'limb_back'
     }
 
     // Add index if we have multiple similar limbs
     baseName = `${baseName}_${String(extIndex).padStart(2, '0')}`
 
     // Create bone chain from root to extremity
-    const chainLength = Math.max(2, Math.min(4, Math.ceil(distance / boneSpacing)))
+    const chainLength = Math.max(
+      settings.limbMinSegments,
+      Math.min(settings.limbMaxSegments, Math.ceil(distance / boneSpacing))
+    )
     let parentIdx = 0 // Start from root
 
     for (let i = 1; i <= chainLength; i++) {

@@ -5,12 +5,16 @@ interface WeightCalculationOptions {
   method: 'envelope' | 'heatmap' | 'nearest'
   falloff: number
   normalizeWeights: boolean
+  smoothIterations: number
+  neighborWeight: number
 }
 
 const defaultOptions: WeightCalculationOptions = {
   method: 'envelope',
-  falloff: 2.0,
+  falloff: 2.5,
   normalizeWeights: true,
+  smoothIterations: 0,
+  neighborWeight: 0.5,
 }
 
 export function calculateAutomaticWeights(
@@ -22,6 +26,8 @@ export function calculateAutomaticWeights(
   const geometry = mesh.geometry
   const position = geometry.attributes.position
   const vertexCount = position.count
+
+  mesh.updateMatrixWorld(true)
 
   const weights: [number, number][][] = []
 
@@ -37,6 +43,22 @@ export function calculateAutomaticWeights(
 
     const vertexWeights = calculateVertexWeights(vertex, bones, opts)
     weights.push(vertexWeights)
+  }
+
+  return weights
+}
+
+export function calculateAutomaticWeightsForMesh(
+  mesh: THREE.Mesh,
+  bones: BoneData[],
+  options: Partial<WeightCalculationOptions> = {}
+): [number, number][][] {
+  const opts = { ...defaultOptions, ...options }
+  let weights = calculateAutomaticWeights(mesh, bones, opts)
+
+  if (opts.smoothIterations > 0) {
+    const adjacency = buildVertexAdjacency(mesh.geometry)
+    weights = smoothWeights(weights, adjacency, opts.smoothIterations, opts.neighborWeight)
   }
 
   return weights
@@ -76,11 +98,11 @@ function calculateEnvelopeWeights(
   const weights: [number, number][] = []
 
   bones.forEach((bone, index) => {
-    const bonePos = new THREE.Vector3(...bone.position)
-    const distance = vertex.distanceTo(bonePos)
+    const { start, end } = getBoneSegment(bone)
+    const distance = distanceToSegment(vertex, start, end)
 
     // Calculate weight based on inverse distance with falloff
-    const envelopeRadius = bone.length * 2 // Envelope size based on bone length
+    const envelopeRadius = Math.max(bone.length * 2, 0.05)
     if (distance < envelopeRadius) {
       const normalizedDist = distance / envelopeRadius
       const weight = Math.pow(1 - normalizedDist, falloff)
@@ -102,11 +124,11 @@ function calculateHeatmapWeights(
   const weights: [number, number][] = []
 
   bones.forEach((bone, index) => {
-    const bonePos = new THREE.Vector3(...bone.position)
-    const distance = vertex.distanceTo(bonePos)
+    const { start, end } = getBoneSegment(bone)
+    const distance = distanceToSegment(vertex, start, end)
 
     // Heat diffusion approximation
-    const sigma = bone.length * 1.5
+    const sigma = Math.max(bone.length * 1.5, 0.05)
     const heat = Math.exp(-(distance * distance) / (2 * sigma * sigma))
 
     if (heat > 0.001) {
@@ -149,7 +171,8 @@ function normalizeWeights(weights: [number, number][]): [number, number][] {
 export function smoothWeights(
   weights: [number, number][][],
   adjacency: number[][],
-  iterations: number = 1
+  iterations: number = 1,
+  neighborWeight: number = 0.5
 ): [number, number][][] {
   let result = [...weights.map((w) => [...w])]
 
@@ -176,7 +199,7 @@ export function smoothWeights(
       // Neighbor weights
       neighbors.forEach((neighborIdx) => {
         result[neighborIdx]?.forEach(([boneIdx, weight]) => {
-          addWeight(boneIdx, weight * 0.5) // Neighbors contribute half
+          addWeight(boneIdx, weight * neighborWeight)
         })
       })
 
@@ -196,6 +219,71 @@ export function smoothWeights(
   }
 
   return result
+}
+
+export function buildVertexAdjacency(
+  geometry: THREE.BufferGeometry
+): number[][] {
+  const position = geometry.attributes.position
+  const vertexCount = position.count
+  const adjacency = Array.from({ length: vertexCount }, () => new Set<number>())
+  const indices = geometry.index?.array
+
+  const addEdge = (a: number, b: number) => {
+    if (a === b) return
+    adjacency[a].add(b)
+    adjacency[b].add(a)
+  }
+
+  if (indices && indices.length >= 3) {
+    for (let i = 0; i < indices.length; i += 3) {
+      const a = indices[i]
+      const b = indices[i + 1]
+      const c = indices[i + 2]
+      addEdge(a, b)
+      addEdge(b, c)
+      addEdge(c, a)
+    }
+  } else {
+    for (let i = 0; i < vertexCount; i += 3) {
+      const a = i
+      const b = i + 1
+      const c = i + 2
+      if (c < vertexCount) {
+        addEdge(a, b)
+        addEdge(b, c)
+        addEdge(c, a)
+      }
+    }
+  }
+
+  return adjacency.map((set) => Array.from(set))
+}
+
+function getBoneSegment(bone: BoneData): { start: THREE.Vector3; end: THREE.Vector3 } {
+  const start = new THREE.Vector3(...bone.position)
+  const length = Math.max(bone.length, 0.001)
+  const rotation = new THREE.Quaternion(...bone.rotation)
+  const direction = new THREE.Vector3(0, 1, 0).applyQuaternion(rotation).normalize()
+  const end = start.clone().add(direction.multiplyScalar(length))
+  return { start, end }
+}
+
+function distanceToSegment(
+  point: THREE.Vector3,
+  start: THREE.Vector3,
+  end: THREE.Vector3
+): number {
+  const segment = end.clone().sub(start)
+  const lengthSq = segment.lengthSq()
+  if (lengthSq === 0) {
+    return point.distanceTo(start)
+  }
+
+  const t = point.clone().sub(start).dot(segment) / lengthSq
+  const clamped = Math.min(1, Math.max(0, t))
+  const closest = start.clone().add(segment.multiplyScalar(clamped))
+  return point.distanceTo(closest)
 }
 
 export function mirrorWeights(

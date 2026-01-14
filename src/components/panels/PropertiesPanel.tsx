@@ -247,7 +247,12 @@ function BoneProperties({ bone }: { bone: BoneData }) {
 }
 
 function WeightPaintProperties() {
-  const { weightPaintSettings, updateWeightPaintSettings } = useEditorStore()
+  const {
+    weightPaintSettings,
+    updateWeightPaintSettings,
+    autoWeightSettings,
+    updateAutoWeightSettings,
+  } = useEditorStore()
 
   return (
     <div className="space-y-4">
@@ -313,6 +318,84 @@ function WeightPaintProperties() {
           <span>0%</span>
           <span>50%</span>
           <span>100%</span>
+        </div>
+      </div>
+
+      {/* Auto Weights */}
+      <div className="space-y-3">
+        <label className="panel-header block">Auto Weights</label>
+
+        <div className="space-y-1">
+          <span className="text-xs text-gray-500">Method</span>
+          <select
+            className="input w-full"
+            value={autoWeightSettings.method}
+            onChange={(e) =>
+              updateAutoWeightSettings({
+                method: e.target.value as 'envelope' | 'heatmap' | 'nearest',
+              })
+            }
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <option value="envelope">Envelope</option>
+            <option value="heatmap">Heatmap</option>
+            <option value="nearest">Nearest</option>
+          </select>
+        </div>
+
+        <div>
+          <label className="text-xs text-gray-500">
+            Falloff: {autoWeightSettings.falloff.toFixed(2)}
+          </label>
+          <input
+            type="range"
+            className="w-full"
+            min={0.1}
+            max={6}
+            step={0.1}
+            value={autoWeightSettings.falloff}
+            onChange={(e) =>
+              updateAutoWeightSettings({ falloff: parseFloat(e.target.value) })
+            }
+          />
+        </div>
+
+        <div>
+          <label className="text-xs text-gray-500">
+            Smooth Iterations: {autoWeightSettings.smoothIterations}
+          </label>
+          <input
+            type="range"
+            className="w-full"
+            min={0}
+            max={10}
+            step={1}
+            value={autoWeightSettings.smoothIterations}
+            onChange={(e) =>
+              updateAutoWeightSettings({
+                smoothIterations: parseInt(e.target.value, 10),
+              })
+            }
+          />
+        </div>
+
+        <div>
+          <label className="text-xs text-gray-500">
+            Neighbor Weight: {(autoWeightSettings.neighborWeight * 100).toFixed(0)}%
+          </label>
+          <input
+            type="range"
+            className="w-full"
+            min={0}
+            max={1}
+            step={0.05}
+            value={autoWeightSettings.neighborWeight}
+            onChange={(e) =>
+              updateAutoWeightSettings({
+                neighborWeight: parseFloat(e.target.value),
+              })
+            }
+          />
         </div>
       </div>
     </div>

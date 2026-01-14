@@ -4,6 +4,7 @@ import { useEditorStore } from '../store'
 import type { ProjectData } from '../types'
 import { getLoadedModel } from '../components/Toolbar'
 import { exportToGLB } from '../utils/glbExporter'
+import { calculateAutomaticWeightsForMesh } from '../utils/weightCalculator'
 
 interface ElectronEventCallbacks {
   onOpenSettings?: () => void
@@ -67,6 +68,7 @@ export function useElectronEvents(callbacks?: ElectronEventCallbacks) {
 
         // Get project data for skeleton and animations
         const projectData = getProjectData()
+        const { autoWeightSettings } = useEditorStore.getState()
 
         console.log('Exporting GLB with:', {
           bonesCount: projectData.skeleton.bones.length,
@@ -77,7 +79,8 @@ export function useElectronEvents(callbacks?: ElectronEventCallbacks) {
         const glbData = await exportToGLB(exportScene, projectData, {
           binary: true,
           embedAnimations: true,
-          optimizeMeshes: true
+          optimizeMeshes: true,
+          autoWeightSettings,
         })
 
         if (!(glbData instanceof ArrayBuffer)) {
@@ -101,17 +104,45 @@ export function useElectronEvents(callbacks?: ElectronEventCallbacks) {
 
   // Calculate weights automatically
   const calculateWeights = useCallback(() => {
-    // Simplified automatic weight calculation
-    // In a real implementation, this would use heat map / envelope-based weights
-    const { skeleton } = useEditorStore.getState()
+    const { skeleton, setWeightMap, pushHistory, autoWeightSettings } = useEditorStore.getState()
+    const loadedModel = getLoadedModel()
+
+    if (!loadedModel) {
+      alert('No model loaded. Please load a model first.')
+      return
+    }
 
     if (skeleton.bones.length === 0) {
       alert('Please create at least one bone first')
       return
     }
 
-    // This is a placeholder - real implementation would calculate based on distance
-    alert('Auto-weight calculation would analyze mesh geometry and bone positions to generate weights')
+    const newWeightMap: ProjectData['weightMap'] = {}
+    let meshCount = 0
+
+    loadedModel.updateMatrixWorld(true)
+    loadedModel.traverse((child) => {
+      if (child instanceof THREE.Mesh && !(child instanceof THREE.SkinnedMesh)) {
+        const weights = calculateAutomaticWeightsForMesh(child, skeleton.bones, {
+          method: autoWeightSettings.method,
+          falloff: autoWeightSettings.falloff,
+          smoothIterations: autoWeightSettings.smoothIterations,
+          neighborWeight: autoWeightSettings.neighborWeight,
+        })
+        const meshName = child.name || `mesh_${meshCount + 1}`
+        newWeightMap[meshName] = { vertexWeights: weights }
+        meshCount += 1
+      }
+    })
+
+    if (meshCount === 0) {
+      alert('No meshes found for weight calculation.')
+      return
+    }
+
+    setWeightMap(newWeightMap)
+    pushHistory(`Auto weights (${meshCount} meshes)`)
+    alert(`Auto weights calculated for ${meshCount} mesh${meshCount === 1 ? '' : 'es'}.`)
   }, [])
 
   useEffect(() => {

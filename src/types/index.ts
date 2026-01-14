@@ -86,6 +86,20 @@ export interface ViewportSettings {
   modelOpacity: number
 }
 
+export interface AutoBoneSettings {
+  boneSpacingFactor: number
+  rootYOffsetFactor: number
+  spineMinSegments: number
+  spineMaxSegments: number
+  limbMinSegments: number
+  limbMaxSegments: number
+  extremityClusterFactor: number
+  extremityTopPercent: number
+  maxExtremities: number
+  extremityMinDistanceFactor: number
+  symmetryAxis: 'auto' | 'x' | 'y' | 'z'
+}
+
 export interface TimelineState {
   currentFrame: number
   isPlaying: boolean
@@ -99,6 +113,13 @@ export interface WeightPaintSettings {
   brushSize: number
   brushStrength: number
   brushMode: 'add' | 'subtract' | 'smooth'
+}
+
+export interface AutoWeightSettings {
+  method: 'envelope' | 'heatmap' | 'nearest'
+  falloff: number
+  smoothIterations: number
+  neighborWeight: number
 }
 
 // Selection Types
