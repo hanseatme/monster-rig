@@ -4,6 +4,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 const clampInt = (value: number, min: number, max: number) => Math.round(clamp(value, min, max))
 
 export const DEFAULT_AUTO_BONE_SETTINGS: AutoBoneSettings = {
+  rigType: 'auto',
   boneSpacingFactor: 0.2,
   rootYOffsetFactor: 0.1,
   spineMinSegments: 2,
@@ -32,7 +33,13 @@ export function normalizeAutoBoneSettings(
       ? merged.symmetryAxis
       : 'auto'
 
+  const rigType =
+    merged.rigType === 'humanoid' || merged.rigType === 'quadruped'
+      ? merged.rigType
+      : 'auto'
+
   return {
+    rigType,
     boneSpacingFactor: clamp(merged.boneSpacingFactor, 0.05, 0.6),
     rootYOffsetFactor: clamp(merged.rootYOffsetFactor, -0.3, 0.3),
     spineMinSegments: spineMin,

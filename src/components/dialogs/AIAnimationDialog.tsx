@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useEditorStore } from '../../store'
-import { generateAnimation } from '../../services/aiAnimationService'
+import { generateAnimation, buildAnimationPrompt, parseAnimationResponse } from '../../services/aiAnimationService'
 
 interface AIAnimationDialogProps {
   isOpen: boolean
@@ -21,18 +21,28 @@ const EXAMPLE_PROMPTS = [
 
 export default function AIAnimationDialog({ isOpen, onClose, onOpenSettings }: AIAnimationDialogProps) {
   const [prompt, setPrompt] = useState('')
+  const [generationMode, setGenerationMode] = useState<'api' | 'manual'>('api')
+  const [manualResponse, setManualResponse] = useState('')
   const [isGenerating, setIsGenerating] = useState(false)
   const [progress, setProgress] = useState('')
   const [error, setError] = useState('')
   const [hasApiKey, setHasApiKey] = useState(false)
+  const [copyStatus, setCopyStatus] = useState('')
 
   const { skeleton } = useEditorStore()
+
+  const promptPayload = useMemo(() => {
+    const trimmed = prompt.trim()
+    if (!trimmed) return null
+    return buildAnimationPrompt(skeleton.bones, trimmed)
+  }, [prompt, skeleton.bones])
 
   useEffect(() => {
     if (isOpen) {
       checkApiKey()
       setError('')
       setProgress('')
+      setCopyStatus('')
     }
   }, [isOpen])
 
@@ -45,7 +55,32 @@ export default function AIAnimationDialog({ isOpen, onClose, onOpenSettings }: A
     setHasApiKey(has)
   }
 
-  const handleGenerate = async () => {
+  const applyAnimationResult = (result: { success: boolean; animation?: any; error?: string }) => {
+    if (result.success && result.animation) {
+      useEditorStore.setState((state: any) => ({
+        ...state,
+        animations: [...state.animations, result.animation!],
+        currentAnimationId: result.animation!.id,
+        timeline: { ...state.timeline, frameEnd: result.animation!.frameCount },
+        isDirty: true,
+      }))
+
+      setProgress(`Created: ${result.animation.name}`)
+
+      setTimeout(() => {
+        onClose()
+        setPrompt('')
+        setManualResponse('')
+        setProgress('')
+      }, 1000)
+      return
+    }
+
+    setError(result.error || 'Failed to generate animation')
+    setProgress('')
+  }
+
+  const handleGenerateApi = async () => {
     if (!prompt.trim()) {
       setError('Please enter an animation description')
       return
@@ -79,28 +114,48 @@ export default function AIAnimationDialog({ isOpen, onClose, onOpenSettings }: A
     )
 
     setIsGenerating(false)
+    applyAnimationResult(result)
+  }
 
-    if (result.success && result.animation) {
-      // Add the animation to the store
-      useEditorStore.setState((state: any) => ({
-        ...state,
-        animations: [...state.animations, result.animation!],
-        currentAnimationId: result.animation!.id,
-        timeline: { ...state.timeline, frameEnd: result.animation!.frameCount },
-        isDirty: true,
-      }))
+  const handleProcessManual = () => {
+    if (!prompt.trim()) {
+      setError('Please enter an animation description')
+      return
+    }
 
-      setProgress(`Created: ${result.animation.name}`)
+    if (skeleton.bones.length === 0) {
+      setError('No bones in skeleton. Add bones first.')
+      return
+    }
 
-      // Close after a short delay to show success
-      setTimeout(() => {
-        onClose()
-        setPrompt('')
-        setProgress('')
-      }, 1000)
-    } else {
-      setError(result.error || 'Failed to generate animation')
-      setProgress('')
+    if (!manualResponse.trim()) {
+      setError('Please paste the AI response to continue')
+      return
+    }
+
+    setIsGenerating(true)
+    setError('')
+    setProgress('Parsing response...')
+
+    const result = parseAnimationResponse(manualResponse.trim(), skeleton.bones)
+
+    setIsGenerating(false)
+    applyAnimationResult(result)
+  }
+
+  const handleCopyPrompt = async () => {
+    if (!promptPayload?.combined) {
+      setError('Please enter a prompt to build the external AI prompt')
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(promptPayload.combined)
+      setCopyStatus('Prompt copied')
+      setTimeout(() => setCopyStatus(''), 1200)
+    } catch (copyError) {
+      console.error('Failed to copy prompt:', copyError)
+      setError('Failed to copy prompt to clipboard')
     }
   }
 
@@ -112,7 +167,7 @@ export default function AIAnimationDialog({ isOpen, onClose, onOpenSettings }: A
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
-      <div className="bg-panel border border-panel-border rounded-lg shadow-xl w-[600px] max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-panel border border-panel-border rounded-lg shadow-xl w-[600px] max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-panel-border">
           <div className="flex items-center gap-2">
@@ -132,9 +187,28 @@ export default function AIAnimationDialog({ isOpen, onClose, onOpenSettings }: A
         </div>
 
         {/* Content */}
-        <div className="p-4 space-y-4">
+        <div className="p-4 space-y-4 overflow-y-auto flex-1 min-h-0">
+          {/* Mode Selection */}
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-gray-400">Mode:</span>
+            <button
+              onClick={() => setGenerationMode('api')}
+              className={`px-2 py-1 rounded transition-colors ${generationMode === 'api' ? 'bg-accent text-white' : 'bg-panel-border text-gray-300 hover:text-white'}`}
+              disabled={isGenerating}
+            >
+              API
+            </button>
+            <button
+              onClick={() => setGenerationMode('manual')}
+              className={`px-2 py-1 rounded transition-colors ${generationMode === 'manual' ? 'bg-accent text-white' : 'bg-panel-border text-gray-300 hover:text-white'}`}
+              disabled={isGenerating}
+            >
+              Manual
+            </button>
+          </div>
+
           {/* API Key Warning */}
-          {!hasApiKey && (
+          {!hasApiKey && generationMode === 'api' && (
             <div className="p-3 bg-yellow-900/30 border border-yellow-700/50 rounded text-sm">
               <div className="flex items-center gap-2">
                 <span>⚠️</span>
@@ -172,6 +246,42 @@ export default function AIAnimationDialog({ isOpen, onClose, onOpenSettings }: A
               autoFocus
             />
           </div>
+
+          {generationMode === 'manual' && (
+            <>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Prompt for External AI</label>
+                <textarea
+                  value={promptPayload?.combined || ''}
+                  readOnly
+                  placeholder="Enter a description above to generate the prompt."
+                  className="w-full h-32 input text-xs resize-none bg-panel-border/50"
+                />
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <button
+                    onClick={handleCopyPrompt}
+                    className="px-2 py-1 rounded bg-panel-border hover:bg-gray-600 transition-colors"
+                    disabled={isGenerating || !promptPayload}
+                  >
+                    Copy Prompt
+                  </button>
+                  {copyStatus && <span>{copyStatus}</span>}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Paste AI Response</label>
+                <textarea
+                  value={manualResponse}
+                  onChange={(e) => setManualResponse(e.target.value)}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  placeholder="Paste the JSON response from the AI here."
+                  className="w-full h-32 input text-sm resize-none"
+                  disabled={isGenerating}
+                />
+              </div>
+            </>
+          )}
 
           {/* Example Prompts */}
           <div className="space-y-2">
@@ -225,18 +335,24 @@ export default function AIAnimationDialog({ isOpen, onClose, onOpenSettings }: A
               Cancel
             </button>
             <button
-              onClick={handleGenerate}
-              disabled={isGenerating || !hasApiKey || skeleton.bones.length === 0 || !prompt.trim()}
+              onClick={generationMode === 'api' ? handleGenerateApi : handleProcessManual}
+              disabled={
+                isGenerating ||
+                skeleton.bones.length === 0 ||
+                !prompt.trim() ||
+                (generationMode === 'api' && !hasApiKey) ||
+                (generationMode === 'manual' && !manualResponse.trim())
+              }
               className="px-4 py-2 rounded text-sm bg-accent hover:bg-accent/80 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               {isGenerating ? (
                 <>
                   <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  Generating...
+                  {generationMode === 'api' ? 'Generating...' : 'Processing...'}
                 </>
               ) : (
                 <>
-                  ✨ Generate Animation
+                  {generationMode === 'api' ? 'Generate Animation' : 'Process Response'}
                 </>
               )}
             </button>

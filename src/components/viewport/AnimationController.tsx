@@ -254,7 +254,7 @@ export default function AnimationController() {
   // Apply animation to bones for a given frame
   const applyAnimation = useCallback((frame: number) => {
     const state = useEditorStore.getState()
-    const { animations, currentAnimationId, skeleton, updateBoneFromAnimation } = state
+    const { animations, currentAnimationId, skeleton, updateBoneFromAnimation, restPoseSnapshot } = state
 
     const currentAnimation = animations.find((a) => a.id === currentAnimationId)
     if (!currentAnimation) return
@@ -263,13 +263,16 @@ export default function AnimationController() {
     if (currentAnimation.tracks.length === 0) return
 
     // Initialize rest pose if not done yet
+    let resolvedRestPoseSnapshot = restPoseSnapshot
     if (!hasInitializedRef.current) {
       initializeRestPose()
+      resolvedRestPoseSnapshot = useEditorStore.getState().restPoseSnapshot
     }
 
     // First pass: apply direct animation values (rotations)
     const animatedPositionIds = new Set<string>()
     const animatedRotationIds = new Set<string>()
+    const animatedScaleIds = new Set<string>()
 
     currentAnimation.tracks.forEach((track) => {
       const bone = skeleton.bones.find((b) => b.id === track.boneId)
@@ -292,9 +295,32 @@ export default function AnimationController() {
           break
         case 'scale':
           updateBoneFromAnimation(bone.id, { scale: value as [number, number, number] })
+          animatedScaleIds.add(bone.id)
           break
       }
     })
+
+    if (resolvedRestPoseSnapshot) {
+      skeleton.bones.forEach((bone) => {
+        const rest = resolvedRestPoseSnapshot[bone.id]
+        if (!rest) return
+
+        const updates: Partial<BoneData> = {}
+        if (!animatedPositionIds.has(bone.id)) {
+          updates.position = [...rest.position] as [number, number, number]
+        }
+        if (!animatedRotationIds.has(bone.id)) {
+          updates.rotation = [...rest.rotation] as [number, number, number, number]
+        }
+        if (!animatedScaleIds.has(bone.id)) {
+          updates.scale = [...rest.scale] as [number, number, number]
+        }
+
+        if (Object.keys(updates).length > 0) {
+          updateBoneFromAnimation(bone.id, updates)
+        }
+      })
+    }
 
     // Second pass: apply Forward Kinematics to update child positions
     if ((animatedPositionIds.size > 0 || animatedRotationIds.size > 0) &&
@@ -314,12 +340,18 @@ export default function AnimationController() {
   // Reset rest pose when animation changes
   const prevAnimationIdRef = useRef<string | null>(null)
   const prevIsPlayingRef = useRef<boolean>(false)
+  const prevRestPoseSnapshotRef = useRef<RestPoseSnapshot | null>(null)
 
   useEffect(() => {
     const unsubscribe = useEditorStore.subscribe((state) => {
       // Check if animation changed
       if (state.currentAnimationId !== prevAnimationIdRef.current) {
         prevAnimationIdRef.current = state.currentAnimationId
+        hasInitializedRef.current = false
+      }
+
+      if (state.restPoseSnapshot !== prevRestPoseSnapshotRef.current) {
+        prevRestPoseSnapshotRef.current = state.restPoseSnapshot
         hasInitializedRef.current = false
       }
 
@@ -373,7 +405,7 @@ export default function AnimationController() {
         lastFrameRef.current = currentFrame
       }
     }
-  })
+  }, -1)
 
   return null
 }

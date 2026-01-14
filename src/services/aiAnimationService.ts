@@ -64,6 +64,45 @@ function buildSkeletonDescription(bones: BoneData[]): string {
   return `Skeleton has ${bones.length} bones:\n${boneList}`
 }
 
+export function buildAnimationPrompt(bones: BoneData[], prompt: string) {
+  const skeletonDescription = buildSkeletonDescription(bones)
+  const userMessage = `${skeletonDescription}\n\nCreate an animation for: "${prompt}"`
+  const combined = `SYSTEM:\n${SYSTEM_PROMPT}\n\nUSER:\n${userMessage}`
+
+  return {
+    system: SYSTEM_PROMPT,
+    user: userMessage,
+    combined,
+  }
+}
+
+function parseAnimationDataFromContent(content: string) {
+  const jsonMatch = content.match(/\{[\s\S]*\}/)
+  if (!jsonMatch) {
+    throw new Error('No JSON found in response')
+  }
+  return JSON.parse(jsonMatch[0])
+}
+
+export function parseAnimationResponse(
+  responseText: string,
+  bones: BoneData[]
+): AIGenerationResult {
+  try {
+    const animationData = parseAnimationDataFromContent(responseText)
+    const animation = convertToAnimationClip(animationData, bones)
+
+    if (!animation) {
+      return { success: false, error: 'Failed to create animation from AI data' }
+    }
+
+    return { success: true, animation }
+  } catch (error) {
+    console.error('Failed to parse AI response:', error)
+    return { success: false, error: 'Failed to parse animation data from AI response' }
+  }
+}
+
 export async function generateAnimation(
   bones: BoneData[],
   prompt: string,
@@ -80,8 +119,7 @@ export async function generateAnimation(
 
   onProgress?.('Preparing skeleton data...')
 
-  const skeletonDescription = buildSkeletonDescription(bones)
-  const userMessage = `${skeletonDescription}\n\nCreate an animation for: "${prompt}"`
+  const { user: userMessage } = buildAnimationPrompt(bones, prompt)
 
   onProgress?.('Sending request to OpenAI GPT-5.2 (this may take up to 10 minutes)...')
 
@@ -155,32 +193,14 @@ export async function generateAnimation(
 
     onProgress?.('Parsing animation data...')
 
-    // Parse the JSON response
-    let animationData: any
-    try {
-      // Try to extract JSON from the response (in case there's extra text)
-      const jsonMatch = content.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) {
-        throw new Error('No JSON found in response')
-      }
-      animationData = JSON.parse(jsonMatch[0])
-    } catch (parseError) {
-      console.error('Failed to parse AI response:', content)
-      return { success: false, error: 'Failed to parse animation data from AI response' }
-    }
-
-    onProgress?.('Creating animation clip...')
-
-    // Convert to our animation format
-    const animation = convertToAnimationClip(animationData, bones)
-
-    if (!animation) {
-      return { success: false, error: 'Failed to create animation from AI data' }
+    const result = parseAnimationResponse(content, bones)
+    if (!result.success) {
+      return result
     }
 
     onProgress?.('Animation generated successfully!')
 
-    return { success: true, animation }
+    return result
   } catch (error) {
     console.error('AI animation generation error:', error)
 

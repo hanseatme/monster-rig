@@ -319,6 +319,10 @@ function createExportSkinnedMesh(
     // Get mesh world matrix for proper vertex position calculation
     mesh.updateMatrixWorld(true)
     const meshWorldMatrix = mesh.matrixWorld.clone()
+    const meshWorldPosition = new THREE.Vector3()
+    const meshWorldRotation = new THREE.Quaternion()
+    const meshWorldScale = new THREE.Vector3()
+    meshWorldMatrix.decompose(meshWorldPosition, meshWorldRotation, meshWorldScale)
 
     // Create bone index map based on skeleton order
     const boneIndexMap = new Map<string, number>()
@@ -446,9 +450,9 @@ function createExportSkinnedMesh(
     // Create skinned mesh
     const skinnedMesh = new THREE.SkinnedMesh(geometry, material)
     skinnedMesh.name = mesh.name || 'SkinnedMesh'
-    skinnedMesh.position.copy(mesh.position)
-    skinnedMesh.rotation.copy(mesh.rotation)
-    skinnedMesh.scale.copy(mesh.scale)
+    skinnedMesh.position.copy(meshWorldPosition)
+    skinnedMesh.quaternion.copy(meshWorldRotation)
+    skinnedMesh.scale.copy(meshWorldScale)
 
     // IMPORTANT: Bind to the skeleton (same skeleton instance, not a clone!)
     // The skeleton bones must be in the scene hierarchy for animation to work
@@ -640,7 +644,7 @@ function buildExportAnimation(
     const sortedKeyframes = [...track.keyframes].sort((a, b) => a.frame - b.frame)
     const usesBezier = sortedKeyframes.some((kf) => kf.interpolation === 'bezier')
     const usesStep = sortedKeyframes.some((kf) => kf.interpolation === 'step')
-    const shouldBake = usesBezier
+    const shouldBake = usesBezier || usesStep
     const totalFrames = Math.max(1, Math.round(animData.frameCount))
     const frameList = shouldBake
       ? Array.from({ length: totalFrames + 1 }, (_, i) => i)

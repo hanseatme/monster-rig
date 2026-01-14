@@ -87,6 +87,7 @@ export interface ViewportSettings {
 }
 
 export interface AutoBoneSettings {
+  rigType: 'auto' | 'humanoid' | 'quadruped'
   boneSpacingFactor: number
   rootYOffsetFactor: number
   spineMinSegments: number

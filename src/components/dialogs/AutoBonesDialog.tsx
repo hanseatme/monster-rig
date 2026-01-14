@@ -236,6 +236,19 @@ export default function AutoBonesDialog({ isOpen, onClose }: AutoBonesDialogProp
           </div>
 
           <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-xs text-gray-500">Rig preset</label>
+              <select
+                className="input text-xs w-full"
+                value={autoBoneSettings.rigType}
+                onChange={(e) => updateAutoBoneSettings({ rigType: e.target.value as 'auto' | 'humanoid' | 'quadruped' })}
+              >
+                <option value="auto">Auto (current)</option>
+                <option value="humanoid">Humanoid</option>
+                <option value="quadruped">Vierbeiner</option>
+              </select>
+            </div>
+
             <div className="space-y-3">
               <label className="text-xs text-gray-500">Bone spacing factor</label>
               <div className="flex items-center gap-2">

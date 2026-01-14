@@ -29,6 +29,45 @@ export interface MeshAnalysisSummary {
   symmetryAxis: 'x' | 'y' | 'z' | null
 }
 
+type Axis = 'x' | 'y' | 'z'
+
+const setAxisValue = (vec: THREE.Vector3, axis: Axis, value: number) => {
+  if (axis === 'x') vec.x = value
+  else if (axis === 'y') vec.y = value
+  else vec.z = value
+}
+
+const addAxisValue = (vec: THREE.Vector3, axis: Axis, value: number) => {
+  if (axis === 'x') vec.x += value
+  else if (axis === 'y') vec.y += value
+  else vec.z += value
+}
+
+const resolveSideAxis = (symmetryAxis: 'x' | 'y' | 'z' | null): 'x' | 'z' => {
+  if (symmetryAxis === 'z') return 'z'
+  return 'x'
+}
+
+const resolveFrontAxis = (sideAxis: 'x' | 'z'): 'x' | 'z' => {
+  return sideAxis === 'x' ? 'z' : 'x'
+}
+
+const addSuggestion = (
+  suggestions: BoneSuggestion[],
+  position: THREE.Vector3,
+  name: string,
+  parentIndex: number | null,
+  confidence: number
+) => {
+  suggestions.push({
+    position: [position.x, position.y, position.z],
+    name,
+    parentIndex,
+    confidence,
+  })
+  return suggestions.length - 1
+}
+
 /**
  * Analyze a 3D object (model) to find good bone positions
  * Works with world coordinates after model transformations
@@ -250,6 +289,13 @@ export function suggestBones(
   options?: Partial<AutoBoneSettings>
 ): BoneSuggestion[] {
   const settings = normalizeAutoBoneSettings(options)
+  if (settings.rigType === 'humanoid') {
+    return suggestHumanoidBones(analysis, settings)
+  }
+  if (settings.rigType === 'quadruped') {
+    return suggestQuadrupedBones(analysis, settings)
+  }
+
   const suggestions: BoneSuggestion[] = []
   const { center, extremities, size } = analysis
 
@@ -352,6 +398,189 @@ export function suggestBones(
       parentIdx = suggestions.length - 1
     }
   })
+
+  return suggestions
+}
+
+function suggestHumanoidBones(
+  analysis: MeshAnalysis,
+  settings: AutoBoneSettings
+): BoneSuggestion[] {
+  const suggestions: BoneSuggestion[] = []
+  const { center, size, boundingBox } = analysis
+  const minY = boundingBox.min.y
+  const height = size.y
+  const avgSize = (size.x + size.y + size.z) / 3
+  const boneSpacing = Math.max(avgSize * settings.boneSpacingFactor, 0.001)
+  const sideAxis = resolveSideAxis(analysis.symmetryAxis)
+  const frontAxis = resolveFrontAxis(sideAxis)
+  const width = sideAxis === 'x' ? size.x : size.z
+  const depth = frontAxis === 'x' ? size.x : size.z
+
+  const pelvisY = minY + height * 0.35
+  const rootY = pelvisY - height * settings.rootYOffsetFactor
+  const chestY = minY + height * 0.6
+  const neckY = minY + height * 0.75
+  const headY = minY + height * 0.9
+
+  const rootPos = new THREE.Vector3(center.x, rootY, center.z)
+  const rootIdx = addSuggestion(suggestions, rootPos, 'root', null, 1.0)
+
+  const spineLength = Math.max(0.01, chestY - pelvisY)
+  const spineSegments = Math.max(
+    settings.spineMinSegments,
+    Math.min(settings.spineMaxSegments, Math.ceil(spineLength / boneSpacing))
+  )
+
+  let lastSpineIdx = rootIdx
+  for (let i = 1; i <= spineSegments; i++) {
+    const t = i / (spineSegments + 1)
+    const pos = new THREE.Vector3(center.x, pelvisY + spineLength * t, center.z)
+    const name = i === spineSegments ? 'chest' : `spine_${String(i).padStart(2, '0')}`
+    lastSpineIdx = addSuggestion(suggestions, pos, name, lastSpineIdx, 0.95)
+  }
+
+  const neckPos = new THREE.Vector3(center.x, neckY, center.z)
+  const neckIdx = addSuggestion(suggestions, neckPos, 'neck', lastSpineIdx, 0.95)
+  const headPos = new THREE.Vector3(center.x, headY, center.z)
+  addAxisValue(headPos, frontAxis, depth * 0.08)
+  addSuggestion(suggestions, headPos, 'head', neckIdx, 0.95)
+
+  const shoulderOffset = width * 0.35
+  const armForward = depth * 0.05
+  const shoulderY = chestY
+  const elbowY = chestY - height * 0.12
+  const handY = chestY - height * 0.25
+
+  const addArm = (side: 'left' | 'right', sideSign: number) => {
+    const shoulderPos = new THREE.Vector3(center.x, shoulderY, center.z)
+    addAxisValue(shoulderPos, sideAxis, shoulderOffset * sideSign)
+    addAxisValue(shoulderPos, frontAxis, armForward)
+    const upperIdx = addSuggestion(suggestions, shoulderPos, `upper_arm_${side}`, lastSpineIdx, 0.9)
+
+    const elbowPos = new THREE.Vector3(center.x, elbowY, center.z)
+    addAxisValue(elbowPos, sideAxis, width * 0.55 * sideSign)
+    addAxisValue(elbowPos, frontAxis, armForward)
+    const lowerIdx = addSuggestion(suggestions, elbowPos, `lower_arm_${side}`, upperIdx, 0.85)
+
+    const handPos = new THREE.Vector3(center.x, handY, center.z)
+    addAxisValue(handPos, sideAxis, width * 0.75 * sideSign)
+    addAxisValue(handPos, frontAxis, armForward)
+    addSuggestion(suggestions, handPos, `hand_${side}`, lowerIdx, 0.8)
+  }
+
+  addArm('left', -1)
+  addArm('right', 1)
+
+  const hipOffset = width * 0.2
+  const legForward = depth * 0.04
+  const footY = minY + height * 0.05
+
+  const addLeg = (side: 'left' | 'right', sideSign: number) => {
+    const hipPos = new THREE.Vector3(center.x, pelvisY, center.z)
+    addAxisValue(hipPos, sideAxis, hipOffset * sideSign)
+    addAxisValue(hipPos, frontAxis, legForward)
+    const upperIdx = addSuggestion(suggestions, hipPos, `upper_leg_${side}`, rootIdx, 0.9)
+
+    const kneePos = hipPos.clone()
+    setAxisValue(kneePos, 'y', pelvisY - height * 0.25)
+    const lowerIdx = addSuggestion(suggestions, kneePos, `lower_leg_${side}`, upperIdx, 0.85)
+
+    const footPos = hipPos.clone()
+    setAxisValue(footPos, 'y', footY)
+    addSuggestion(suggestions, footPos, `foot_${side}`, lowerIdx, 0.8)
+  }
+
+  addLeg('left', -1)
+  addLeg('right', 1)
+
+  return suggestions
+}
+
+function suggestQuadrupedBones(
+  analysis: MeshAnalysis,
+  settings: AutoBoneSettings
+): BoneSuggestion[] {
+  const suggestions: BoneSuggestion[] = []
+  const { center, size, boundingBox } = analysis
+  const minY = boundingBox.min.y
+  const height = size.y
+  const avgSize = (size.x + size.y + size.z) / 3
+  const boneSpacing = Math.max(avgSize * settings.boneSpacingFactor, 0.001)
+  const sideAxis = resolveSideAxis(analysis.symmetryAxis)
+  const frontAxis = resolveFrontAxis(sideAxis)
+  const width = sideAxis === 'x' ? size.x : size.z
+  const depth = frontAxis === 'x' ? size.x : size.z
+
+  const rootY = minY + height * 0.3 - height * settings.rootYOffsetFactor
+  const bodyY = minY + height * 0.45
+
+  const rootPos = new THREE.Vector3(center.x, rootY, center.z)
+  const rootIdx = addSuggestion(suggestions, rootPos, 'root', null, 1.0)
+
+  const spineLength = Math.max(0.01, depth * 0.7)
+  const spineSegments = Math.max(
+    settings.spineMinSegments,
+    Math.min(settings.spineMaxSegments, Math.ceil(spineLength / boneSpacing))
+  )
+
+  const backPos = new THREE.Vector3(center.x, bodyY, center.z)
+  addAxisValue(backPos, frontAxis, -depth * 0.35)
+  const frontPos = new THREE.Vector3(center.x, bodyY, center.z)
+  addAxisValue(frontPos, frontAxis, depth * 0.35)
+
+  let lastSpineIdx = rootIdx
+  for (let i = 1; i <= spineSegments; i++) {
+    const t = i / (spineSegments + 1)
+    const pos = backPos.clone().lerp(frontPos, t)
+    const name = i === spineSegments ? 'chest' : `spine_${String(i).padStart(2, '0')}`
+    lastSpineIdx = addSuggestion(suggestions, pos, name, lastSpineIdx, 0.95)
+  }
+
+  const neckPos = frontPos.clone()
+  setAxisValue(neckPos, 'y', minY + height * 0.6)
+  const neckIdx = addSuggestion(suggestions, neckPos, 'neck', lastSpineIdx, 0.95)
+
+  const headPos = frontPos.clone()
+  setAxisValue(headPos, 'y', minY + height * 0.75)
+  addAxisValue(headPos, frontAxis, depth * 0.12)
+  addSuggestion(suggestions, headPos, 'head', neckIdx, 0.9)
+
+  const tailBasePos = backPos.clone()
+  setAxisValue(tailBasePos, 'y', minY + height * 0.45)
+  const tailBaseIdx = addSuggestion(suggestions, tailBasePos, 'tail_base', rootIdx, 0.85)
+  const tailTipPos = tailBasePos.clone()
+  addAxisValue(tailTipPos, frontAxis, -depth * 0.15)
+  setAxisValue(tailTipPos, 'y', minY + height * 0.4)
+  addSuggestion(suggestions, tailTipPos, 'tail_tip', tailBaseIdx, 0.8)
+
+  const legSideOffset = width * 0.3
+  const frontLegY = minY + height * 0.42
+  const backLegY = minY + height * 0.38
+  const footY = minY + height * 0.05
+
+  const addLeg = (prefix: string, frontOffset: number, sideSign: number, hipY: number, parentIdx: number) => {
+    const hipPos = new THREE.Vector3(center.x, hipY, center.z)
+    addAxisValue(hipPos, frontAxis, frontOffset)
+    addAxisValue(hipPos, sideAxis, legSideOffset * sideSign)
+    const sideLabel = sideSign > 0 ? 'right' : 'left'
+    const upperIdx = addSuggestion(suggestions, hipPos, `${prefix}_leg_${sideLabel}_01`, parentIdx, 0.9)
+
+    const kneePos = hipPos.clone()
+    setAxisValue(kneePos, 'y', hipY - height * 0.2)
+    const lowerIdx = addSuggestion(suggestions, kneePos, `${prefix}_leg_${sideLabel}_02`, upperIdx, 0.85)
+
+    const footPos = hipPos.clone()
+    setAxisValue(footPos, 'y', footY)
+    addSuggestion(suggestions, footPos, `${prefix}_leg_${sideLabel}_03`, lowerIdx, 0.8)
+  }
+
+  const frontOffset = depth * 0.3
+  const backOffset = -depth * 0.3
+  addLeg('front', frontOffset, -1, frontLegY, lastSpineIdx)
+  addLeg('front', frontOffset, 1, frontLegY, lastSpineIdx)
+  addLeg('back', backOffset, -1, backLegY, rootIdx)
+  addLeg('back', backOffset, 1, backLegY, rootIdx)
 
   return suggestions
 }

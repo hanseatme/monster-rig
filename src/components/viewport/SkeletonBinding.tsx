@@ -3,7 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useEditorStore } from '../../store'
 import { getLoadedModel } from '../Toolbar'
-import type { BoneData } from '../../types'
+import type { BoneData, RestPoseSnapshot } from '../../types'
 import { calculateAutomaticWeightsForMesh } from '../../utils/weightCalculator'
 
 /**
@@ -15,10 +15,36 @@ import { calculateAutomaticWeightsForMesh } from '../../utils/weightCalculator'
 export default function SkeletonBinding() {
   const skinnedMeshesRef = useRef<THREE.SkinnedMesh[]>([])
   const originalMeshesRef = useRef<THREE.Mesh[]>([])
-  const lastStructureHashRef = useRef<string>('')
+  const lastRestPoseHashRef = useRef<string>('')
   const lastAutoWeightHashRef = useRef<string>('')
   const isActiveRef = useRef<boolean>(false)
   const restPoseRef = useRef<Map<string, { position: [number, number, number], rotation: [number, number, number, number] }>>(new Map())
+
+  const getRestPoseHash = useCallback((bones: BoneData[], restPoseSnapshot: RestPoseSnapshot | null) => {
+    const format = (values: number[]) => values.map((value) => value.toFixed(4)).join(',')
+    return bones.map((bone) => {
+      const rest = restPoseSnapshot?.[bone.id]
+      const position = rest?.position ?? bone.position
+      const rotation = rest?.rotation ?? bone.rotation
+      const scale = rest?.scale ?? bone.scale
+      const parentId = bone.parentId ?? 'root'
+      return `${bone.id}:${parentId}:${format(position)}:${format(rotation)}:${format(scale)}`
+    }).join('|')
+  }, [])
+
+  const buildRestBones = useCallback((bones: BoneData[], restPoseSnapshot: RestPoseSnapshot | null) => {
+    if (!restPoseSnapshot) return bones
+    return bones.map((bone) => {
+      const rest = restPoseSnapshot[bone.id]
+      if (!rest) return bone
+      return {
+        ...bone,
+        position: [...rest.position] as [number, number, number],
+        rotation: [...rest.rotation] as [number, number, number, number],
+        scale: [...rest.scale] as [number, number, number],
+      }
+    })
+  }, [])
 
   // Store the rest pose when we first create skinned meshes
   const storeRestPose = useCallback((bones: BoneData[]) => {
@@ -50,7 +76,7 @@ export default function SkeletonBinding() {
       }
     })
     skinnedMeshesRef.current = []
-    lastStructureHashRef.current = ''
+    lastRestPoseHashRef.current = ''
     lastAutoWeightHashRef.current = ''
   }, [])
 
@@ -62,7 +88,8 @@ export default function SkeletonBinding() {
       falloff: number
       smoothIterations: number
       neighborWeight: number
-    }
+    },
+    restPoseSnapshot: RestPoseSnapshot | null
   ) => {
     const loadedModel = getLoadedModel()
     if (!loadedModel || bones.length === 0) {
@@ -70,9 +97,10 @@ export default function SkeletonBinding() {
       return
     }
 
-    const structureHash = bones.map(b => `${b.id}:${b.parentId}`).join('|')
+    const restBones = buildRestBones(bones, restPoseSnapshot)
+    const restPoseHash = getRestPoseHash(bones, restPoseSnapshot)
     const autoWeightHash = `${autoWeightSettings.method}:${autoWeightSettings.falloff}:${autoWeightSettings.smoothIterations}:${autoWeightSettings.neighborWeight}`
-    if (structureHash === lastStructureHashRef.current &&
+    if (restPoseHash === lastRestPoseHashRef.current &&
         autoWeightHash === lastAutoWeightHashRef.current &&
         skinnedMeshesRef.current.length > 0) {
       return // Already built for this structure
@@ -81,14 +109,14 @@ export default function SkeletonBinding() {
     // Clean up old skinned meshes first
     cleanupSkinnedMeshes()
 
-    lastStructureHashRef.current = structureHash
+    lastRestPoseHashRef.current = restPoseHash
     lastAutoWeightHashRef.current = autoWeightHash
 
     // Store rest pose for this skeleton
-    storeRestPose(bones)
+    storeRestPose(restBones)
 
     // Build skeleton from rest pose
-    const { skeleton, rootBone, boneIndexMap } = buildThreeSkeleton(bones)
+    const { skeleton, rootBone, boneIndexMap } = buildThreeSkeleton(restBones)
     if (!skeleton || !rootBone) return
 
     // Find all meshes and store references
@@ -107,7 +135,7 @@ export default function SkeletonBinding() {
         mesh,
         skeleton,
         rootBone,
-        bones,
+        restBones,
         weightMap,
         boneIndexMap,
         autoWeightSettings
@@ -122,7 +150,7 @@ export default function SkeletonBinding() {
     })
 
     console.log(`Created ${skinnedMeshesRef.current.length} skinned meshes with ${bones.length} bones`)
-  }, [cleanupSkinnedMeshes, storeRestPose])
+  }, [buildRestBones, cleanupSkinnedMeshes, getRestPoseHash, storeRestPose])
 
   // Subscribe to mode and playback changes
   useEffect(() => {
@@ -134,13 +162,13 @@ export default function SkeletonBinding() {
 
     const handleStateChange = () => {
       const shouldBeActive = checkShouldBeActive()
-      const { skeleton, weightMap, autoWeightSettings } = useEditorStore.getState()
+      const { skeleton, weightMap, autoWeightSettings, restPoseSnapshot } = useEditorStore.getState()
 
       if (shouldBeActive && !isActiveRef.current) {
         // Transitioning to active state
         isActiveRef.current = true
         if (skeleton.bones.length > 0) {
-          rebuildSkinnedMeshes(skeleton.bones, weightMap, autoWeightSettings)
+          rebuildSkinnedMeshes(skeleton.bones, weightMap, autoWeightSettings, restPoseSnapshot)
         }
       } else if (!shouldBeActive && isActiveRef.current) {
         // Transitioning to inactive state
@@ -162,16 +190,16 @@ export default function SkeletonBinding() {
       // If active, check for bone structure changes
       if (isActiveRef.current) {
         const bones = state.skeleton.bones
-        const prevBones = prevState.skeleton.bones
-
-        // Check if bone structure changed (added/removed/reparented)
-        const structureHash = bones.map(b => `${b.id}:${b.parentId}`).join('|')
-        const prevStructureHash = prevBones.map(b => `${b.id}:${b.parentId}`).join('|')
 
         const autoWeightHash = `${state.autoWeightSettings.method}:${state.autoWeightSettings.falloff}:${state.autoWeightSettings.smoothIterations}:${state.autoWeightSettings.neighborWeight}`
+        const restPoseHash = state.restPoseSnapshot
+          ? getRestPoseHash(bones, state.restPoseSnapshot)
+          : state.timeline.isPlaying
+            ? lastRestPoseHashRef.current
+            : getRestPoseHash(bones, null)
 
-        if (structureHash !== prevStructureHash || autoWeightHash !== lastAutoWeightHashRef.current) {
-          rebuildSkinnedMeshes(bones, state.weightMap, state.autoWeightSettings)
+        if (restPoseHash !== lastRestPoseHashRef.current || autoWeightHash !== lastAutoWeightHashRef.current) {
+          rebuildSkinnedMeshes(bones, state.weightMap, state.autoWeightSettings, state.restPoseSnapshot)
         }
       }
     })
@@ -290,7 +318,7 @@ function buildThreeSkeleton(bones: BoneData[]): SkeletonResult {
 
 function createSkinnedMesh(
   mesh: THREE.Mesh,
-  _skeleton: THREE.Skeleton,
+  skeleton: THREE.Skeleton,
   rootBone: THREE.Bone,
   editorBones: BoneData[],
   weightMap: Record<string, { vertexWeights: [number, number][][] }>,
@@ -416,13 +444,32 @@ function createSkinnedMesh(
     const clonedRoot = cloneBoneHierarchy(rootBone)
     skinnedMesh.add(clonedRoot)
 
-    // Create skeleton from cloned bones
-    const clonedBones: THREE.Bone[] = []
+    // Create skeleton from cloned bones in the exact same order as the source skeleton
+    const clonedBoneMap = new Map<string, THREE.Bone>()
     clonedRoot.traverse((child) => {
       if (child instanceof THREE.Bone) {
-        clonedBones.push(child)
+        const editorId = child.userData?.editorId as string | undefined
+        if (editorId) {
+          clonedBoneMap.set(editorId, child)
+        }
       }
     })
+
+    let clonedBones: THREE.Bone[] = skeleton.bones
+      .map((bone) => {
+        const editorId = bone.userData?.editorId as string | undefined
+        return editorId ? clonedBoneMap.get(editorId) : undefined
+      })
+      .filter((bone): bone is THREE.Bone => Boolean(bone))
+
+    if (clonedBones.length !== skeleton.bones.length) {
+      clonedBones = []
+      clonedRoot.traverse((child) => {
+        if (child instanceof THREE.Bone) {
+          clonedBones.push(child)
+        }
+      })
+    }
 
     const clonedSkeleton = new THREE.Skeleton(clonedBones)
     skinnedMesh.bind(clonedSkeleton)
@@ -458,7 +505,10 @@ function updateBoneTransforms(
   meshWorldMatrix: THREE.Matrix4
 ) {
   const meshWorldInverse = meshWorldMatrix.clone().invert()
-  const meshWorldRotation = new THREE.Quaternion().setFromRotationMatrix(meshWorldMatrix)
+  const meshWorldPosition = new THREE.Vector3()
+  const meshWorldRotation = new THREE.Quaternion()
+  const meshWorldScale = new THREE.Vector3()
+  meshWorldMatrix.decompose(meshWorldPosition, meshWorldRotation, meshWorldScale)
   const meshWorldRotationInv = meshWorldRotation.clone().invert()
 
   editorBones.forEach((editorBone) => {
