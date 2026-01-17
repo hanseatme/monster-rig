@@ -109,10 +109,15 @@ function BoneConnection({ parent, child }: { parent: BoneData; child: BoneData }
 
 // Transform controls for selected bone
 function BoneTransformControls({ bone }: { bone: BoneData }) {
-  const { transformMode, updateBone, pushHistory } = useEditorStore()
+  const { transformMode, updateBone, pushHistory, riggingOffset } = useEditorStore()
   const targetRef = useRef<THREE.Mesh>(null)
   const isDragging = useRef(false)
   const [ready, setReady] = useState(false)
+  const inverseOffset: [number, number, number] = [
+    -riggingOffset[0],
+    -riggingOffset[1],
+    -riggingOffset[2],
+  ]
 
   // Set ready when ref is available
   useEffect(() => {
@@ -174,17 +179,19 @@ function BoneTransformControls({ bone }: { bone: BoneData }) {
 
       {/* Transform controls attached to the target */}
       {ready && targetRef.current && (
-        <TransformControls
-          object={targetRef.current}
-          mode={controlMode}
-          size={0.8}
-          showX
-          showY
-          showZ
-          onObjectChange={handleChange}
-          onMouseDown={handleDragStart}
-          onMouseUp={handleDragEnd}
-        />
+        <group position={inverseOffset}>
+          <TransformControls
+            object={targetRef.current}
+            mode={controlMode}
+            size={0.8}
+            showX
+            showY
+            showZ
+            onObjectChange={handleChange}
+            onMouseDown={handleDragStart}
+            onMouseUp={handleDragEnd}
+          />
+        </group>
       )}
     </>
   )

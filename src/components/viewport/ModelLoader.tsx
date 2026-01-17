@@ -116,7 +116,7 @@ function applyDisplayMode(
 }
 
 export default function ModelLoader() {
-  const { modelPath, viewportSettings, setMeshHierarchy } = useEditorStore()
+  const { modelPath, viewportSettings, setMeshHierarchy, setRiggingOffset } = useEditorStore()
   const groupRef = useRef<THREE.Group>(null)
   const displayedModelRef = useRef<THREE.Group | null>(null)
   const [model, setModel] = useState<THREE.Group | null>(null)
@@ -129,6 +129,7 @@ export default function ModelLoader() {
       setModel(null)
       displayedModelRef.current = null
       originalMaterials.clear()
+      setRiggingOffset([0, 0, 0])
       return
     }
 
@@ -182,6 +183,10 @@ export default function ModelLoader() {
 
             loadedModel.position.sub(center)
             loadedModel.scale.multiplyScalar(scale)
+
+            const postBox = new THREE.Box3().setFromObject(loadedModel)
+            const offsetY = -postBox.min.y
+            setRiggingOffset([0, offsetY, 0])
 
             // Build mesh hierarchy for the panel
             const hierarchy = buildHierarchy(loadedModel)

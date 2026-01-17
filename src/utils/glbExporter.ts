@@ -160,6 +160,15 @@ export async function exportToGLB(
   })
 }
 
+const isCentralRootName = (name: string) => {
+  const normalized = name.toLowerCase().replace(/\s+/g, '_')
+  if (/(pelvis|hips|hip|root)$/.test(normalized)) {
+    if (/(left|right|_l|_r|\.l|\.r|_left|_right)$/.test(normalized)) return false
+    return true
+  }
+  return false
+}
+
 /**
  * Restore materials to opaque, fully textured state for export
  */
@@ -632,6 +641,9 @@ function buildExportAnimation(
   animData.tracks.forEach((track) => {
     const boneData = boneDataMap.get(track.boneId)
     if (!boneData) return
+    if (track.property === 'position' && (!boneData.parentId || isCentralRootName(boneData.name))) {
+      return
+    }
 
     // Get the actual Three.js bone to use its name
     const threeBone = boneMap.get(track.boneId)

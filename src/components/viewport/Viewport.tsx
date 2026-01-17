@@ -11,7 +11,8 @@ import SelectionHandler from './SelectionHandler'
 import SkeletonBinding from './SkeletonBinding'
 
 function ViewportContent() {
-  const { viewportSettings, mode } = useEditorStore()
+  const { viewportSettings, mode, riggingOffset } = useEditorStore()
+  const riggingOffsetValue = riggingOffset
 
   return (
     <>
@@ -41,20 +42,22 @@ function ViewportContent() {
         <axesHelper args={[5]} />
       )}
 
-      {/* Model */}
-      <Suspense fallback={null}>
-        <ModelLoader />
-      </Suspense>
+      <group position={riggingOffsetValue}>
+        {/* Model */}
+        <Suspense fallback={null}>
+          <ModelLoader />
+        </Suspense>
 
-      {/* Skeleton Binding - connects bones to mesh for real-time deformation */}
-      <SkeletonBinding />
+        {/* Skeleton Binding - connects bones to mesh for real-time deformation */}
+        <SkeletonBinding />
 
-      {/* Bone Visualization */}
-      {viewportSettings.showBones && <BoneVisualizer />}
+        {/* Bone Visualization */}
+        {viewportSettings.showBones && <BoneVisualizer />}
 
-      {/* Mode-specific components */}
-      {mode === 'bone' && <BoneCreator />}
-      {mode === 'weight-paint' && <WeightPaintOverlay />}
+        {/* Mode-specific components */}
+        {mode === 'bone' && <BoneCreator />}
+        {mode === 'weight-paint' && <WeightPaintOverlay />}
+      </group>
 
       {/* Animation Controller - always active for playback */}
       <AnimationController />

@@ -5,8 +5,11 @@ import { useEditorStore } from '../../store'
 
 export default function SelectionHandler() {
   const { gl, camera } = useThree()
-  const { mode, skeleton, selection, setSelection } = useEditorStore()
+  const { mode, skeleton, selection, setSelection, riggingOffset } = useEditorStore()
   const raycaster = useRef(new THREE.Raycaster())
+  const offsetX = riggingOffset[0]
+  const offsetY = riggingOffset[1]
+  const offsetZ = riggingOffset[2]
 
   const handleClick = useCallback(
     (event: MouseEvent) => {
@@ -23,7 +26,11 @@ export default function SelectionHandler() {
       let closestBone: { id: string; distance: number } | null = null
 
       skeleton.bones.forEach((bone) => {
-        const bonePos = new THREE.Vector3(...bone.position)
+        const bonePos = new THREE.Vector3(
+          bone.position[0] + offsetX,
+          bone.position[1] + offsetY,
+          bone.position[2] + offsetZ
+        )
         const distance = raycaster.current.ray.distanceToPoint(bonePos)
 
         // Threshold for clicking on a bone
@@ -64,7 +71,7 @@ export default function SelectionHandler() {
         setSelection({ type: null, ids: [] })
       }
     },
-    [mode, skeleton.bones, selection, setSelection, gl, camera]
+    [mode, skeleton.bones, selection, setSelection, gl, camera, offsetX, offsetY, offsetZ]
   )
 
   // Attach event listener

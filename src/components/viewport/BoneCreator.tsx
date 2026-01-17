@@ -6,9 +6,12 @@ import { useEditorStore } from '../../store'
 
 export default function BoneCreator() {
   const { camera, gl, scene } = useThree()
-  const { addBone, selection } = useEditorStore()
+  const { addBone, selection, riggingOffset } = useEditorStore()
   const [previewPosition, setPreviewPosition] = useState<[number, number, number] | null>(null)
   const raycaster = useRef(new THREE.Raycaster())
+  const offsetX = riggingOffset[0]
+  const offsetY = riggingOffset[1]
+  const offsetZ = riggingOffset[2]
 
   const handlePointerMove = useCallback(
     (event: PointerEvent) => {
@@ -30,18 +33,22 @@ export default function BoneCreator() {
 
       if (intersects.length > 0) {
         const point = intersects[0].point
-        setPreviewPosition([point.x, point.y, point.z])
+        setPreviewPosition([point.x - offsetX, point.y - offsetY, point.z - offsetZ])
       } else {
         // Raycast against a plane at y=0
         const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
         const intersectPoint = new THREE.Vector3()
         raycaster.current.ray.intersectPlane(plane, intersectPoint)
         if (intersectPoint) {
-          setPreviewPosition([intersectPoint.x, intersectPoint.y, intersectPoint.z])
+          setPreviewPosition([
+            intersectPoint.x - offsetX,
+            intersectPoint.y - offsetY,
+            intersectPoint.z - offsetZ
+          ])
         }
       }
     },
-    [camera, gl, scene]
+    [camera, gl, scene, offsetX, offsetY, offsetZ]
   )
 
   const handleClick = useCallback(

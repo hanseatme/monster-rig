@@ -23,6 +23,7 @@ export default function AutoBonesDialog({ isOpen, onClose }: AutoBonesDialogProp
     skeleton,
     autoBoneSettings,
     updateAutoBoneSettings,
+    riggingOffset,
   } = useEditorStore()
 
   const [suggestions, setSuggestions] = useState<EditableSuggestion[]>([])
@@ -70,7 +71,7 @@ export default function AutoBonesDialog({ isOpen, onClose }: AutoBonesDialogProp
     setProgress('Analyzing model...')
 
     const analysis = analyzeModel(loadedModel, autoBoneSettings)
-    const summary = summarizeAnalysis(analysis)
+    const summary = summarizeAnalysis(analysis, autoBoneSettings)
     const avgSize = (analysis.size.x + analysis.size.y + analysis.size.z) / 3
     setDefaultBoneLength(Math.max(avgSize * autoBoneSettings.boneSpacingFactor, 0.1))
 
@@ -103,6 +104,7 @@ export default function AutoBonesDialog({ isOpen, onClose }: AutoBonesDialogProp
         summary,
         baseSuggestions,
         apiKey,
+        autoBoneSettings,
         aiHint,
         (msg) => setProgress(msg)
       )
@@ -145,6 +147,10 @@ export default function AutoBonesDialog({ isOpen, onClose }: AutoBonesDialogProp
     const { addBone, updateBone } = useEditorStore.getState()
     const indexMap = new Map<number, number>()
     const boneIdMap = new Map<number, string>()
+    const offsetX = riggingOffset[0]
+    const offsetY = riggingOffset[1]
+    const offsetZ = riggingOffset[2]
+    const adjustedPositions = new Map<number, [number, number, number]>()
 
     let nextIndex = 0
     suggestions.forEach((s, index) => {
@@ -181,21 +187,32 @@ export default function AutoBonesDialog({ isOpen, onClose }: AutoBonesDialogProp
     }
 
     suggestions.forEach((suggestion, index) => {
+      adjustedPositions.set(index, [
+        suggestion.position[0] - offsetX,
+        suggestion.position[1] - offsetY,
+        suggestion.position[2] - offsetZ,
+      ])
+    })
+
+    suggestions.forEach((suggestion, index) => {
       if (!suggestion.enabled) return
 
       const mappedParent = getEnabledParentIndex(suggestion.parentIndex)
       const parentId = mappedParent !== null ? boneIdMap.get(mappedParent) || null : null
 
-      const boneId = addBone(suggestion.position, parentId)
+      const adjustedPosition = adjustedPositions.get(index) || suggestion.position
+      const boneId = addBone(adjustedPosition, parentId)
       const newIndex = indexMap.get(index) ?? 0
       boneIdMap.set(newIndex, boneId)
 
       let length = defaultBoneLength
       const children = (childrenMap.get(index) || []).filter((childIdx) => suggestions[childIdx].enabled)
       if (children.length > 0) {
-        length = distance(suggestion.position, suggestions[children[0]].position)
+        const childPosition = adjustedPositions.get(children[0]) || suggestions[children[0]].position
+        length = distance(adjustedPosition, childPosition)
       } else if (suggestion.parentIndex !== null) {
-        length = distance(suggestion.position, suggestions[suggestion.parentIndex].position)
+        const parentPosition = adjustedPositions.get(suggestion.parentIndex) || suggestions[suggestion.parentIndex].position
+        length = distance(adjustedPosition, parentPosition)
       }
 
       updateBone(boneId, { name: suggestion.name, length: Math.max(0.05, length) })

@@ -52,6 +52,7 @@ interface EditorStore {
   autoWeightSettings: AutoWeightSettings
   restPoseSnapshot: RestPoseSnapshot | null
   autoBoneSettings: AutoBoneSettings
+  riggingOffset: [number, number, number]
 
   // Mesh Hierarchy
   meshHierarchy: MeshNode[]
@@ -77,6 +78,7 @@ interface EditorStore {
   addBone: (position: [number, number, number], parentId?: string | null) => string
   updateBone: (id: string, updates: Partial<BoneData>) => void
   updateBoneFromAnimation: (id: string, updates: Partial<BoneData>) => void
+  updateBonesFromAnimation: (updates: Record<string, Partial<BoneData>>) => void
   deleteBone: (id: string) => void
   setBoneParent: (boneId: string, parentId: string | null) => void
   mirrorBones: (axis: 'x' | 'y' | 'z') => void
@@ -107,6 +109,7 @@ interface EditorStore {
   updateWeightPaintSettings: (settings: Partial<WeightPaintSettings>) => void
   updateAutoWeightSettings: (settings: Partial<AutoWeightSettings>) => void
   updateAutoBoneSettings: (settings: Partial<AutoBoneSettings>) => void
+  setRiggingOffset: (offset: [number, number, number]) => void
 
   // Actions - Mesh Hierarchy
   setMeshHierarchy: (hierarchy: MeshNode[]) => void
@@ -199,6 +202,7 @@ const getInitialState = () => ({
   },
   restPoseSnapshot: null,
   autoBoneSettings: { ...DEFAULT_AUTO_BONE_SETTINGS },
+  riggingOffset: [0, 0, 0] as [number, number, number],
   meshHierarchy: [],
   history: [],
   historyIndex: -1,
@@ -316,6 +320,17 @@ export const useEditorStore = create<EditorStore>()(
         if (bone) {
           Object.assign(bone, updates)
         }
+      })
+    },
+
+    updateBonesFromAnimation: (updates) => {
+      set((state) => {
+        state.skeleton.bones.forEach((bone) => {
+          const update = updates[bone.id]
+          if (update) {
+            Object.assign(bone, update)
+          }
+        })
       })
     },
 
@@ -542,7 +557,21 @@ export const useEditorStore = create<EditorStore>()(
     // Editor State Actions
     setMode: (mode) => {
       set((state) => {
+        const wasAnimate = state.mode === 'animate'
         state.mode = mode
+
+        if (wasAnimate && mode !== 'animate') {
+          state.timeline.isPlaying = false
+          if (state.restPoseSnapshot) {
+            state.skeleton.bones.forEach((bone) => {
+              const rest = state.restPoseSnapshot?.[bone.id]
+              if (!rest) return
+              bone.position = [...rest.position]
+              bone.rotation = [...rest.rotation]
+              bone.scale = [...rest.scale]
+            })
+          }
+        }
       })
     },
 
@@ -599,6 +628,12 @@ export const useEditorStore = create<EditorStore>()(
           ...state.autoBoneSettings,
           ...settings,
         })
+      })
+    },
+
+    setRiggingOffset: (offset) => {
+      set((state) => {
+        state.riggingOffset = offset
       })
     },
 

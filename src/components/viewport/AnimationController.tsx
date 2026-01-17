@@ -127,6 +127,25 @@ function calculateLocalRotation(
   return inverseParentRotation.multiply(boneRotation)
 }
 
+const isCentralRootName = (name: string) => {
+  const normalized = name.toLowerCase().replace(/\s+/g, '_')
+  if (/(pelvis|hips|hip|root)$/.test(normalized)) {
+    if (/(left|right|_l|_r|\.l|\.r|_left|_right)$/.test(normalized)) return false
+    return true
+  }
+  return false
+}
+
+const getRootMotionLockedIds = (bones: BoneData[]) => {
+  const locked = new Set<string>()
+  bones.forEach((bone) => {
+    if (!bone.parentId || isCentralRootName(bone.name)) {
+      locked.add(bone.id)
+    }
+  })
+  return locked
+}
+
 // Apply Forward Kinematics - propagate parent rotations to children
 function applyForwardKinematics(
   bones: BoneData[],
@@ -254,7 +273,7 @@ export default function AnimationController() {
   // Apply animation to bones for a given frame
   const applyAnimation = useCallback((frame: number) => {
     const state = useEditorStore.getState()
-    const { animations, currentAnimationId, skeleton, updateBoneFromAnimation, restPoseSnapshot } = state
+    const { animations, currentAnimationId, skeleton, updateBonesFromAnimation, restPoseSnapshot } = state
 
     const currentAnimation = animations.find((a) => a.id === currentAnimationId)
     if (!currentAnimation) return
@@ -273,28 +292,36 @@ export default function AnimationController() {
     const animatedPositionIds = new Set<string>()
     const animatedRotationIds = new Set<string>()
     const animatedScaleIds = new Set<string>()
+    const boneMap = new Map(skeleton.bones.map((bone) => [bone.id, bone]))
+    const updatesById: Record<string, Partial<BoneData>> = {}
+    const queueUpdate = (id: string, updates: Partial<BoneData>) => {
+      updatesById[id] = { ...updatesById[id], ...updates }
+    }
+
+    const lockedPositionIds = getRootMotionLockedIds(skeleton.bones)
 
     currentAnimation.tracks.forEach((track) => {
-      const bone = skeleton.bones.find((b) => b.id === track.boneId)
+      const bone = boneMap.get(track.boneId)
       if (!bone) return
 
       // Skip if track has no keyframes
       if (track.keyframes.length === 0) return
+      if (track.property === 'position' && lockedPositionIds.has(bone.id)) return
 
       const value = interpolateValue(track.keyframes, frame, track.property)
       if (!value) return
 
       switch (track.property) {
         case 'position':
-          updateBoneFromAnimation(bone.id, { position: value as [number, number, number] })
+          queueUpdate(bone.id, { position: value as [number, number, number] })
           animatedPositionIds.add(bone.id)
           break
         case 'rotation':
-          updateBoneFromAnimation(bone.id, { rotation: value as [number, number, number, number] })
+          queueUpdate(bone.id, { rotation: value as [number, number, number, number] })
           animatedRotationIds.add(bone.id)
           break
         case 'scale':
-          updateBoneFromAnimation(bone.id, { scale: value as [number, number, number] })
+          queueUpdate(bone.id, { scale: value as [number, number, number] })
           animatedScaleIds.add(bone.id)
           break
       }
@@ -307,17 +334,29 @@ export default function AnimationController() {
 
         const updates: Partial<BoneData> = {}
         if (!animatedPositionIds.has(bone.id)) {
-          updates.position = [...rest.position] as [number, number, number]
+          const [rx, ry, rz] = rest.position
+          const [bx, by, bz] = bone.position
+          if (bx !== rx || by !== ry || bz !== rz) {
+            updates.position = [rx, ry, rz]
+          }
         }
         if (!animatedRotationIds.has(bone.id)) {
-          updates.rotation = [...rest.rotation] as [number, number, number, number]
+          const [rx, ry, rz, rw] = rest.rotation
+          const [bx, by, bz, bw] = bone.rotation
+          if (bx !== rx || by !== ry || bz !== rz || bw !== rw) {
+            updates.rotation = [rx, ry, rz, rw]
+          }
         }
         if (!animatedScaleIds.has(bone.id)) {
-          updates.scale = [...rest.scale] as [number, number, number]
+          const [rx, ry, rz] = rest.scale
+          const [bx, by, bz] = bone.scale
+          if (bx !== rx || by !== ry || bz !== rz) {
+            updates.scale = [rx, ry, rz]
+          }
         }
 
         if (Object.keys(updates).length > 0) {
-          updateBoneFromAnimation(bone.id, updates)
+          queueUpdate(bone.id, updates)
         }
       })
     }
@@ -325,15 +364,21 @@ export default function AnimationController() {
     // Second pass: apply Forward Kinematics to update child positions
     if ((animatedPositionIds.size > 0 || animatedRotationIds.size > 0) &&
         Object.keys(restPoseRef.current).length > 0) {
-      // Get fresh skeleton state after rotation updates
-      const freshState = useEditorStore.getState()
+      const bonesForFk = skeleton.bones.map((bone) => {
+        const updates = updatesById[bone.id]
+        return updates ? { ...bone, ...updates } : bone
+      })
       applyForwardKinematics(
-        freshState.skeleton.bones,
+        bonesForFk,
         restPoseRef.current,
-        updateBoneFromAnimation,
+        queueUpdate,
         animatedPositionIds,
         animatedRotationIds
       )
+    }
+
+    if (Object.keys(updatesById).length > 0) {
+      updateBonesFromAnimation(updatesById)
     }
   }, [initializeRestPose])
 
@@ -355,8 +400,8 @@ export default function AnimationController() {
         hasInitializedRef.current = false
       }
 
-      // Check if playback just started
-      if (state.timeline.isPlaying && !prevIsPlayingRef.current) {
+      // Check if playback just started (animate mode only)
+      if (state.timeline.isPlaying && !prevIsPlayingRef.current && state.mode === 'animate') {
         initializeRestPose()
       }
       prevIsPlayingRef.current = state.timeline.isPlaying
@@ -367,7 +412,13 @@ export default function AnimationController() {
   // Handle playback using useFrame
   useFrame((_, delta) => {
     const state = useEditorStore.getState()
-    const { timeline, animations, currentAnimationId, updateTimeline } = state
+    const { timeline, animations, currentAnimationId, updateTimeline, mode } = state
+    if (mode !== 'animate') {
+      if (timeline.isPlaying) {
+        updateTimeline({ isPlaying: false })
+      }
+      return
+    }
 
     const currentAnimation = animations.find((a) => a.id === currentAnimationId)
 

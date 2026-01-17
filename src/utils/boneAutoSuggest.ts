@@ -10,12 +10,22 @@ export interface BoneSuggestion {
   confidence: number
 }
 
+interface HeightProfileSample {
+  y: number
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
+  count: number
+}
+
 interface MeshAnalysis {
   center: THREE.Vector3
   boundingBox: THREE.Box3
   extremities: THREE.Vector3[]
   symmetryAxis: 'x' | 'y' | 'z' | null
   size: THREE.Vector3
+  heightProfile: HeightProfileSample[]
 }
 
 export interface MeshAnalysisSummary {
@@ -27,9 +37,40 @@ export interface MeshAnalysisSummary {
   }
   extremities: [number, number, number][]
   symmetryAxis: 'x' | 'y' | 'z' | null
+  heightProfile?: {
+    y: number
+    width: number
+    depth: number
+    density: number
+  }[]
+  humanoidLandmarks?: {
+    pelvisY: number
+    chestY: number
+    shoulderY: number
+    neckY: number
+    headY: number
+    hipWidth: number
+    shoulderWidth: number
+    footY: number
+    handY: number
+    sideAxis: 'x' | 'z'
+    frontAxis: 'x' | 'z'
+    frontAxisSign: 1 | -1
+    leftHand?: [number, number, number]
+    rightHand?: [number, number, number]
+    leftFoot?: [number, number, number]
+    rightFoot?: [number, number, number]
+    headTip?: [number, number, number]
+  }
 }
 
 type Axis = 'x' | 'y' | 'z'
+
+const getAxisValue = (vec: THREE.Vector3, axis: Axis) => {
+  if (axis === 'x') return vec.x
+  if (axis === 'y') return vec.y
+  return vec.z
+}
 
 const setAxisValue = (vec: THREE.Vector3, axis: Axis, value: number) => {
   if (axis === 'x') vec.x = value
@@ -52,6 +93,8 @@ const resolveFrontAxis = (sideAxis: 'x' | 'z'): 'x' | 'z' => {
   return sideAxis === 'x' ? 'z' : 'x'
 }
 
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+
 const addSuggestion = (
   suggestions: BoneSuggestion[],
   position: THREE.Vector3,
@@ -66,6 +109,204 @@ const addSuggestion = (
     confidence,
   })
   return suggestions.length - 1
+}
+
+function buildHeightProfile(
+  vertices: THREE.Vector3[],
+  bounds: THREE.Box3,
+  segments: number = 24
+): HeightProfileSample[] {
+  const minY = bounds.min.y
+  const maxY = bounds.max.y
+  const height = Math.max(0.0001, maxY - minY)
+  const step = height / segments
+  const center = bounds.getCenter(new THREE.Vector3())
+
+  const samples: HeightProfileSample[] = Array.from({ length: segments }, (_, i) => ({
+    y: minY + (i + 0.5) * step,
+    minX: Infinity,
+    maxX: -Infinity,
+    minZ: Infinity,
+    maxZ: -Infinity,
+    count: 0,
+  }))
+
+  vertices.forEach((vertex) => {
+    const idx = clamp(Math.floor((vertex.y - minY) / step), 0, segments - 1)
+    const sample = samples[idx]
+    sample.count += 1
+    sample.minX = Math.min(sample.minX, vertex.x)
+    sample.maxX = Math.max(sample.maxX, vertex.x)
+    sample.minZ = Math.min(sample.minZ, vertex.z)
+    sample.maxZ = Math.max(sample.maxZ, vertex.z)
+  })
+
+  samples.forEach((sample) => {
+    if (sample.count === 0) {
+      sample.minX = center.x
+      sample.maxX = center.x
+      sample.minZ = center.z
+      sample.maxZ = center.z
+    }
+  })
+
+  return samples
+}
+
+function getProfileDimensions(
+  sample: HeightProfileSample,
+  sideAxis: 'x' | 'z'
+) {
+  const width = sideAxis === 'x'
+    ? sample.maxX - sample.minX
+    : sample.maxZ - sample.minZ
+  const depth = sideAxis === 'x'
+    ? sample.maxZ - sample.minZ
+    : sample.maxX - sample.minX
+  return { width, depth }
+}
+
+function findProfilePeak(
+  profile: HeightProfileSample[],
+  minY: number,
+  height: number,
+  rangeStart: number,
+  rangeEnd: number,
+  sideAxis: 'x' | 'z'
+) {
+  if (profile.length === 0) return null
+  const startY = minY + height * rangeStart
+  const endY = minY + height * rangeEnd
+  const maxCount = Math.max(...profile.map((sample) => sample.count))
+  const minCount = Math.max(3, Math.floor(maxCount * 0.08))
+
+  let best: { sample: HeightProfileSample; score: number } | null = null
+  profile.forEach((sample) => {
+    if (sample.y < startY || sample.y > endY) return
+    if (sample.count < minCount) return
+    const { width, depth } = getProfileDimensions(sample, sideAxis)
+    const score = width * Math.sqrt(sample.count + 1) + depth * 0.15
+    if (!best || score > best.score) {
+      best = { sample, score }
+    }
+  })
+
+  if (!best) return null
+  const { width, depth } = getProfileDimensions(best.sample, sideAxis)
+  return { y: best.sample.y, width, depth }
+}
+
+function findClosestProfileSample(profile: HeightProfileSample[], targetY: number) {
+  if (profile.length === 0) return null
+  let best = profile[0]
+  let bestDist = Math.abs(best.y - targetY)
+  for (let i = 1; i < profile.length; i++) {
+    const dist = Math.abs(profile[i].y - targetY)
+    if (dist < bestDist) {
+      best = profile[i]
+      bestDist = dist
+    }
+  }
+  return best
+}
+
+function pickExtremityBySide(
+  extremities: THREE.Vector3[],
+  sideAxis: 'x' | 'z',
+  center: THREE.Vector3,
+  sideSign: number,
+  minSideOffset: number
+) {
+  let best: THREE.Vector3 | null = null
+  let bestScore = -Infinity
+  extremities.forEach((ext) => {
+    const sideOffset = getAxisValue(ext, sideAxis) - getAxisValue(center, sideAxis)
+    if (Math.sign(sideOffset) !== sideSign) return
+    const absSide = Math.abs(sideOffset)
+    if (absSide < minSideOffset) return
+    const score = absSide
+    if (score > bestScore) {
+      bestScore = score
+      best = ext
+    }
+  })
+  return best
+}
+
+function clampToBounds(pos: THREE.Vector3, bounds: THREE.Box3, margin: number) {
+  pos.x = clamp(pos.x, bounds.min.x - margin, bounds.max.x + margin)
+  pos.y = clamp(pos.y, bounds.min.y - margin, bounds.max.y + margin)
+  pos.z = clamp(pos.z, bounds.min.z - margin, bounds.max.z + margin)
+}
+
+function deriveHumanoidLandmarks(
+  analysis: MeshAnalysis,
+  settings: AutoBoneSettings
+) {
+  const { boundingBox, size, center, extremities, heightProfile } = analysis
+  const minY = boundingBox.min.y
+  const height = size.y
+  const sideAxis = resolveSideAxis(analysis.symmetryAxis)
+  const frontAxis = resolveFrontAxis(sideAxis)
+  const profile = heightProfile
+
+  const hipPeak = findProfilePeak(profile, minY, height, 0.25, 0.55, sideAxis)
+  const shoulderPeak = findProfilePeak(profile, minY, height, 0.55, 0.85, sideAxis)
+
+  const hipY = hipPeak?.y ?? minY + height * 0.35
+  const shoulderY = shoulderPeak?.y ?? minY + height * 0.7
+  const chestY = clamp(shoulderY - height * 0.12, hipY + height * 0.08, shoulderY - height * 0.02)
+
+  const headTip = extremities
+    .filter((ext) => ext.y > minY + height * 0.75)
+    .sort((a, b) => b.y - a.y)[0]
+  const headY = headTip ? headTip.y : minY + height * 0.92
+  const neckY = clamp(headY - height * 0.08, shoulderY + height * 0.05, headY - height * 0.02)
+
+  const hipSample = findClosestProfileSample(profile, hipY)
+  const shoulderSample = findClosestProfileSample(profile, shoulderY)
+  const hipWidth = hipSample ? getProfileDimensions(hipSample, sideAxis).width : (sideAxis === 'x' ? size.x : size.z)
+  const shoulderWidth = shoulderSample ? getProfileDimensions(shoulderSample, sideAxis).width : (sideAxis === 'x' ? size.x : size.z)
+
+  const frontAxisSign = (() => {
+    if (headTip) {
+      const offset = getAxisValue(headTip, frontAxis) - getAxisValue(center, frontAxis)
+      if (Math.abs(offset) > 0.001) return offset >= 0 ? 1 : -1
+    }
+    return 1
+  })()
+
+  const footY = minY + height * 0.05
+  const handY = chestY - height * 0.22
+
+  const bottomExtremities = extremities.filter((ext) => ext.y < minY + height * 0.2)
+  const midExtremities = extremities.filter((ext) => ext.y > minY + height * 0.45 && ext.y < minY + height * 0.85)
+
+  const minSideOffset = Math.max(0.001, shoulderWidth * 0.18)
+  const leftHand = pickExtremityBySide(midExtremities, sideAxis, center, -1, minSideOffset)
+  const rightHand = pickExtremityBySide(midExtremities, sideAxis, center, 1, minSideOffset)
+  const leftFoot = pickExtremityBySide(bottomExtremities, sideAxis, center, -1, minSideOffset)
+  const rightFoot = pickExtremityBySide(bottomExtremities, sideAxis, center, 1, minSideOffset)
+
+  return {
+    pelvisY: hipY - height * 0.04,
+    chestY,
+    shoulderY,
+    neckY,
+    headY,
+    hipWidth,
+    shoulderWidth,
+    footY,
+    handY,
+    sideAxis,
+    frontAxis,
+    frontAxisSign: frontAxisSign >= 0 ? 1 : -1,
+    leftHand: leftHand ? [leftHand.x, leftHand.y, leftHand.z] : undefined,
+    rightHand: rightHand ? [rightHand.x, rightHand.y, rightHand.z] : undefined,
+    leftFoot: leftFoot ? [leftFoot.x, leftFoot.y, leftFoot.z] : undefined,
+    rightFoot: rightFoot ? [rightFoot.x, rightFoot.y, rightFoot.z] : undefined,
+    headTip: headTip ? [headTip.x, headTip.y, headTip.z] : undefined,
+  }
 }
 
 /**
@@ -116,6 +357,7 @@ export function analyzeModel(
       extremities: [],
       symmetryAxis: settings.symmetryAxis === 'auto' ? 'x' : settings.symmetryAxis,
       size,
+      heightProfile: buildHeightProfile([], box),
     }
   }
 
@@ -132,16 +374,37 @@ export function analyzeModel(
   // Detect symmetry axis
   const symmetryAxis = detectSymmetryAxis(worldVertices, center, size, settings.symmetryAxis)
 
+  const heightProfile = buildHeightProfile(worldVertices, boundingBox)
+
   return {
     center,
     boundingBox,
     extremities,
     symmetryAxis,
     size,
+    heightProfile,
   }
 }
 
-export function summarizeAnalysis(analysis: MeshAnalysis): MeshAnalysisSummary {
+export function summarizeAnalysis(
+  analysis: MeshAnalysis,
+  settings?: Partial<AutoBoneSettings>
+): MeshAnalysisSummary {
+  const normalized = normalizeAutoBoneSettings(settings)
+  const profileSummary = analysis.heightProfile.map((sample) => {
+    const width = sample.maxX - sample.minX
+    const depth = sample.maxZ - sample.minZ
+    return {
+      y: sample.y,
+      width,
+      depth,
+      density: sample.count,
+    }
+  })
+  const humanoidLandmarks = normalized.rigType === 'humanoid'
+    ? deriveHumanoidLandmarks(analysis, normalized)
+    : undefined
+
   return {
     center: [analysis.center.x, analysis.center.y, analysis.center.z],
     size: [analysis.size.x, analysis.size.y, analysis.size.z],
@@ -151,6 +414,8 @@ export function summarizeAnalysis(analysis: MeshAnalysis): MeshAnalysisSummary {
     },
     extremities: analysis.extremities.map((ext) => [ext.x, ext.y, ext.z]),
     symmetryAxis: analysis.symmetryAxis,
+    heightProfile: profileSummary,
+    humanoidLandmarks,
   }
 }
 
@@ -412,19 +677,32 @@ function suggestHumanoidBones(
   const height = size.y
   const avgSize = (size.x + size.y + size.z) / 3
   const boneSpacing = Math.max(avgSize * settings.boneSpacingFactor, 0.001)
-  const sideAxis = resolveSideAxis(analysis.symmetryAxis)
-  const frontAxis = resolveFrontAxis(sideAxis)
+  const landmarks = deriveHumanoidLandmarks(analysis, settings)
+  const sideAxis = landmarks.sideAxis
+  const frontAxis = landmarks.frontAxis
+  const frontSign = landmarks.frontAxisSign
   const width = sideAxis === 'x' ? size.x : size.z
   const depth = frontAxis === 'x' ? size.x : size.z
+  const margin = height * 0.06
 
-  const pelvisY = minY + height * 0.35
-  const rootY = pelvisY - height * settings.rootYOffsetFactor
-  const chestY = minY + height * 0.6
-  const neckY = minY + height * 0.75
-  const headY = minY + height * 0.9
+  const pelvisY = landmarks.pelvisY
+  const rootY = clamp(
+    pelvisY - height * settings.rootYOffsetFactor,
+    minY + height * 0.02,
+    pelvisY - height * 0.02
+  )
+  const chestY = landmarks.chestY
+  const shoulderY = landmarks.shoulderY
+  const neckY = landmarks.neckY
+  const headY = landmarks.headY
 
   const rootPos = new THREE.Vector3(center.x, rootY, center.z)
+  clampToBounds(rootPos, boundingBox, margin)
   const rootIdx = addSuggestion(suggestions, rootPos, 'root', null, 1.0)
+
+  const pelvisPos = new THREE.Vector3(center.x, pelvisY, center.z)
+  clampToBounds(pelvisPos, boundingBox, margin)
+  const pelvisIdx = addSuggestion(suggestions, pelvisPos, 'pelvis', rootIdx, 0.95)
 
   const spineLength = Math.max(0.01, chestY - pelvisY)
   const spineSegments = Math.max(
@@ -432,7 +710,7 @@ function suggestHumanoidBones(
     Math.min(settings.spineMaxSegments, Math.ceil(spineLength / boneSpacing))
   )
 
-  let lastSpineIdx = rootIdx
+  let lastSpineIdx = pelvisIdx
   for (let i = 1; i <= spineSegments; i++) {
     const t = i / (spineSegments + 1)
     const pos = new THREE.Vector3(center.x, pelvisY + spineLength * t, center.z)
@@ -441,53 +719,96 @@ function suggestHumanoidBones(
   }
 
   const neckPos = new THREE.Vector3(center.x, neckY, center.z)
+  addAxisValue(neckPos, frontAxis, depth * 0.02 * frontSign)
+  clampToBounds(neckPos, boundingBox, margin)
   const neckIdx = addSuggestion(suggestions, neckPos, 'neck', lastSpineIdx, 0.95)
-  const headPos = new THREE.Vector3(center.x, headY, center.z)
-  addAxisValue(headPos, frontAxis, depth * 0.08)
+
+  const headPos = landmarks.headTip
+    ? new THREE.Vector3(...landmarks.headTip)
+    : new THREE.Vector3(center.x, headY, center.z)
+  addAxisValue(headPos, frontAxis, depth * 0.08 * frontSign)
+  clampToBounds(headPos, boundingBox, margin)
   addSuggestion(suggestions, headPos, 'head', neckIdx, 0.95)
 
-  const shoulderOffset = width * 0.35
-  const armForward = depth * 0.05
-  const shoulderY = chestY
-  const elbowY = chestY - height * 0.12
-  const handY = chestY - height * 0.25
+  const shoulderOffset = Math.max(landmarks.shoulderWidth * 0.45, width * 0.25)
+  const hipOffset = Math.max(landmarks.hipWidth * 0.35, width * 0.2)
+  const armForward = depth * 0.05 * frontSign
+  const legForward = depth * 0.03 * frontSign
+
+  const clavicleY = chestY + height * 0.03
 
   const addArm = (side: 'left' | 'right', sideSign: number) => {
+    const claviclePos = new THREE.Vector3(center.x, clavicleY, center.z)
+    addAxisValue(claviclePos, sideAxis, shoulderOffset * 0.55 * sideSign)
+    addAxisValue(claviclePos, frontAxis, armForward * 0.4)
+    clampToBounds(claviclePos, boundingBox, margin)
+    const clavicleIdx = addSuggestion(suggestions, claviclePos, `clavicle_${side}`, lastSpineIdx, 0.9)
+
     const shoulderPos = new THREE.Vector3(center.x, shoulderY, center.z)
     addAxisValue(shoulderPos, sideAxis, shoulderOffset * sideSign)
     addAxisValue(shoulderPos, frontAxis, armForward)
-    const upperIdx = addSuggestion(suggestions, shoulderPos, `upper_arm_${side}`, lastSpineIdx, 0.9)
+    clampToBounds(shoulderPos, boundingBox, margin)
+    const upperIdx = addSuggestion(suggestions, shoulderPos, `upper_arm_${side}`, clavicleIdx, 0.9)
 
-    const elbowPos = new THREE.Vector3(center.x, elbowY, center.z)
-    addAxisValue(elbowPos, sideAxis, width * 0.55 * sideSign)
-    addAxisValue(elbowPos, frontAxis, armForward)
+    const fallbackHandY = clamp(landmarks.handY, minY + height * 0.35, shoulderY - height * 0.08)
+    const handPos = sideSign < 0 && landmarks.leftHand
+      ? new THREE.Vector3(...landmarks.leftHand)
+      : sideSign > 0 && landmarks.rightHand
+        ? new THREE.Vector3(...landmarks.rightHand)
+        : new THREE.Vector3(center.x, fallbackHandY, center.z)
+
+    if (!landmarks.leftHand && sideSign < 0) {
+      addAxisValue(handPos, sideAxis, shoulderOffset * 1.55 * sideSign)
+      addAxisValue(handPos, frontAxis, armForward + depth * 0.02 * frontSign)
+    } else if (!landmarks.rightHand && sideSign > 0) {
+      addAxisValue(handPos, sideAxis, shoulderOffset * 1.55 * sideSign)
+      addAxisValue(handPos, frontAxis, armForward + depth * 0.02 * frontSign)
+    }
+
+    handPos.y = clamp(handPos.y, minY + height * 0.3, shoulderY - height * 0.05)
+    clampToBounds(handPos, boundingBox, margin)
+
+    const elbowPos = new THREE.Vector3().lerpVectors(shoulderPos, handPos, 0.5)
+    elbowPos.y = clamp(elbowPos.y, minY + height * 0.35, shoulderY - height * 0.1)
+    clampToBounds(elbowPos, boundingBox, margin)
     const lowerIdx = addSuggestion(suggestions, elbowPos, `lower_arm_${side}`, upperIdx, 0.85)
 
-    const handPos = new THREE.Vector3(center.x, handY, center.z)
-    addAxisValue(handPos, sideAxis, width * 0.75 * sideSign)
-    addAxisValue(handPos, frontAxis, armForward)
     addSuggestion(suggestions, handPos, `hand_${side}`, lowerIdx, 0.8)
   }
 
   addArm('left', -1)
   addArm('right', 1)
 
-  const hipOffset = width * 0.2
-  const legForward = depth * 0.04
-  const footY = minY + height * 0.05
-
   const addLeg = (side: 'left' | 'right', sideSign: number) => {
     const hipPos = new THREE.Vector3(center.x, pelvisY, center.z)
     addAxisValue(hipPos, sideAxis, hipOffset * sideSign)
     addAxisValue(hipPos, frontAxis, legForward)
-    const upperIdx = addSuggestion(suggestions, hipPos, `upper_leg_${side}`, rootIdx, 0.9)
+    clampToBounds(hipPos, boundingBox, margin)
+    const upperIdx = addSuggestion(suggestions, hipPos, `upper_leg_${side}`, pelvisIdx, 0.9)
 
-    const kneePos = hipPos.clone()
-    setAxisValue(kneePos, 'y', pelvisY - height * 0.25)
+    const fallbackFootY = clamp(landmarks.footY, minY + height * 0.02, pelvisY - height * 0.15)
+    const footPos = sideSign < 0 && landmarks.leftFoot
+      ? new THREE.Vector3(...landmarks.leftFoot)
+      : sideSign > 0 && landmarks.rightFoot
+        ? new THREE.Vector3(...landmarks.rightFoot)
+        : new THREE.Vector3(center.x, fallbackFootY, center.z)
+
+    if (!landmarks.leftFoot && sideSign < 0) {
+      addAxisValue(footPos, sideAxis, hipOffset * 1.25 * sideSign)
+      addAxisValue(footPos, frontAxis, legForward + depth * 0.04 * frontSign)
+    } else if (!landmarks.rightFoot && sideSign > 0) {
+      addAxisValue(footPos, sideAxis, hipOffset * 1.25 * sideSign)
+      addAxisValue(footPos, frontAxis, legForward + depth * 0.04 * frontSign)
+    }
+
+    footPos.y = clamp(footPos.y, minY + height * 0.01, pelvisY - height * 0.1)
+    clampToBounds(footPos, boundingBox, margin)
+
+    const kneePos = new THREE.Vector3().lerpVectors(hipPos, footPos, 0.5)
+    kneePos.y = clamp(kneePos.y, minY + height * 0.15, pelvisY - height * 0.2)
+    clampToBounds(kneePos, boundingBox, margin)
     const lowerIdx = addSuggestion(suggestions, kneePos, `lower_leg_${side}`, upperIdx, 0.85)
 
-    const footPos = hipPos.clone()
-    setAxisValue(footPos, 'y', footY)
     addSuggestion(suggestions, footPos, `foot_${side}`, lowerIdx, 0.8)
   }
 

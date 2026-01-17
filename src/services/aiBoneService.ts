@@ -1,4 +1,5 @@
 import type { BoneSuggestion, MeshAnalysisSummary } from '../utils/boneAutoSuggest'
+import type { AutoBoneSettings } from '../types'
 
 interface AIBoneGenerationResult {
   success: boolean
@@ -8,7 +9,7 @@ interface AIBoneGenerationResult {
 
 const SYSTEM_PROMPT = `You are an expert rigger. Your task is to propose a clean, well-named bone layout for a 3D creature model.
 
-You will receive a model summary and a baseline auto-suggest list. Improve naming and placement if needed, but keep the bone count reasonable.
+You will receive a model summary, rig settings, and a baseline auto-suggest list. Improve naming and placement if needed, but keep the bone count reasonable.
 
 Return ONLY a JSON object with this exact structure:
 {
@@ -25,9 +26,11 @@ Rules:
 1. Use unique, ASCII-friendly names (letters, numbers, underscores).
 2. Parent indices refer to the index in the returned array.
 3. Keep positions within the model bounding box, unless a slight extension is required.
-4. Preserve a sensible hierarchy: root first, then spine, then limbs.
-5. If unsure, stay close to the baseline suggestions.
-6. Output JSON only.`
+4. Preserve a sensible hierarchy: root first, then pelvis/spine, then neck/head, then limbs.
+5. If rigType is "humanoid", use classic humanoid naming (root, pelvis, spine_01.., chest, neck, head, clavicle_left/right, upper_arm_left/right, lower_arm_left/right, hand_left/right, upper_leg_left/right, lower_leg_left/right, foot_left/right).
+6. If humanoidLandmarks are provided, align bones to those heights/widths and keep symmetry.
+7. If unsure, stay close to the baseline suggestions.
+8. Output JSON only.`
 
 function sanitizeName(name: string, index: number, used: Map<string, number>): string {
   const base = name.trim().replace(/\s+/g, '_') || `bone_${String(index + 1).padStart(2, '0')}`
@@ -82,6 +85,7 @@ export async function generateAIBoneSuggestions(
   analysis: MeshAnalysisSummary,
   baseSuggestions: BoneSuggestion[],
   apiKey: string,
+  settings: AutoBoneSettings,
   hint?: string,
   onProgress?: (message: string) => void
 ): Promise<AIBoneGenerationResult> {
@@ -93,6 +97,7 @@ export async function generateAIBoneSuggestions(
 
   const payload = {
     modelSummary: analysis,
+    rigSettings: settings,
     baselineSuggestions: baseSuggestions.map((s, index) => ({
       index,
       name: s.name,

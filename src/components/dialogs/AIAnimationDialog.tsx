@@ -137,7 +137,7 @@ export default function AIAnimationDialog({ isOpen, onClose, onOpenSettings }: A
     setError('')
     setProgress('Parsing response...')
 
-    const result = parseAnimationResponse(manualResponse.trim(), skeleton.bones)
+    const result = parseAnimationResponse(manualResponse.trim(), skeleton.bones, prompt.trim())
 
     setIsGenerating(false)
     applyAnimationResult(result)

@@ -104,7 +104,7 @@ export function useElectronEvents(callbacks?: ElectronEventCallbacks) {
 
   // Calculate weights automatically
   const calculateWeights = useCallback(() => {
-    const { skeleton, setWeightMap, pushHistory, autoWeightSettings } = useEditorStore.getState()
+    const { skeleton, setWeightMap, pushHistory, autoWeightSettings, riggingOffset } = useEditorStore.getState()
     const loadedModel = getLoadedModel()
 
     if (!loadedModel) {
@@ -120,10 +120,25 @@ export function useElectronEvents(callbacks?: ElectronEventCallbacks) {
     const newWeightMap: ProjectData['weightMap'] = {}
     let meshCount = 0
 
+    const offsetX = riggingOffset[0]
+    const offsetY = riggingOffset[1]
+    const offsetZ = riggingOffset[2]
+    const hasOffset = offsetX !== 0 || offsetY !== 0 || offsetZ !== 0
+    const bonesForWeights = hasOffset
+      ? skeleton.bones.map((bone) => ({
+        ...bone,
+        position: [
+          bone.position[0] + offsetX,
+          bone.position[1] + offsetY,
+          bone.position[2] + offsetZ,
+        ] as [number, number, number],
+      }))
+      : skeleton.bones
+
     loadedModel.updateMatrixWorld(true)
     loadedModel.traverse((child) => {
       if (child instanceof THREE.Mesh && !(child instanceof THREE.SkinnedMesh)) {
-        const weights = calculateAutomaticWeightsForMesh(child, skeleton.bones, {
+        const weights = calculateAutomaticWeightsForMesh(child, bonesForWeights, {
           method: autoWeightSettings.method,
           falloff: autoWeightSettings.falloff,
           smoothIterations: autoWeightSettings.smoothIterations,

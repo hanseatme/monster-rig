@@ -14,6 +14,7 @@ export default function Timeline() {
     currentAnimationId,
     timeline,
     updateTimeline,
+    mode,
     selection,
     skeleton,
     addAnimation,
@@ -33,6 +34,7 @@ export default function Timeline() {
   const [selectedKeyframes, setSelectedKeyframes] = useState<SelectedKeyframe[]>([])
 
   const currentAnimation = animations.find((a) => a.id === currentAnimationId)
+  const isAnimateMode = mode === 'animate'
 
   useEffect(() => {
     if (!currentAnimation) return
@@ -84,54 +86,56 @@ export default function Timeline() {
 
   const handleTimelineClick = useCallback(
     (e: React.MouseEvent) => {
-      if (!timelineRef.current || !currentAnimation) return
+      if (!isAnimateMode || !timelineRef.current || !currentAnimation) return
 
       const rect = timelineRef.current.getBoundingClientRect()
       const x = e.clientX - rect.left
       const frame = Math.round((x / rect.width) * currentAnimation.frameCount)
       updateTimeline({ currentFrame: Math.max(0, Math.min(frame, currentAnimation.frameCount)) })
     },
-    [currentAnimation, updateTimeline]
+    [currentAnimation, updateTimeline, isAnimateMode]
   )
 
   const handleDrag = useCallback(
     (e: React.MouseEvent) => {
-      if (!isDragging || !timelineRef.current || !currentAnimation) return
+      if (!isAnimateMode || !isDragging || !timelineRef.current || !currentAnimation) return
 
       const rect = timelineRef.current.getBoundingClientRect()
       const x = e.clientX - rect.left
       const frame = Math.round((x / rect.width) * currentAnimation.frameCount)
       updateTimeline({ currentFrame: Math.max(0, Math.min(frame, currentAnimation.frameCount)) })
     },
-    [isDragging, currentAnimation, updateTimeline]
+    [isDragging, currentAnimation, updateTimeline, isAnimateMode]
   )
 
   const handlePlayPause = useCallback(() => {
+    if (!isAnimateMode) return
     updateTimeline({ isPlaying: !timeline.isPlaying })
-  }, [timeline.isPlaying, updateTimeline])
+  }, [timeline.isPlaying, updateTimeline, isAnimateMode])
 
   const handleStop = useCallback(() => {
+    if (!isAnimateMode) return
     updateTimeline({ isPlaying: false, currentFrame: 0 })
-  }, [updateTimeline])
+  }, [updateTimeline, isAnimateMode])
 
   const handlePrevFrame = useCallback(() => {
-    if (!currentAnimation) return
+    if (!isAnimateMode || !currentAnimation) return
     updateTimeline({
       currentFrame: Math.max(0, Math.floor(timeline.currentFrame) - 1),
       isPlaying: false,
     })
-  }, [currentAnimation, timeline.currentFrame, updateTimeline])
+  }, [currentAnimation, timeline.currentFrame, updateTimeline, isAnimateMode])
 
   const handleNextFrame = useCallback(() => {
-    if (!currentAnimation) return
+    if (!isAnimateMode || !currentAnimation) return
     updateTimeline({
       currentFrame: Math.min(currentAnimation.frameCount, Math.floor(timeline.currentFrame) + 1),
       isPlaying: false,
     })
-  }, [currentAnimation, timeline.currentFrame, updateTimeline])
+  }, [currentAnimation, timeline.currentFrame, updateTimeline, isAnimateMode])
 
   const handleInsertKeyframe = useCallback(() => {
-    if (!currentAnimation || selection.type !== 'bone') return
+    if (!isAnimateMode || !currentAnimation || selection.type !== 'bone') return
 
     selection.ids.forEach((boneId) => {
       const bone = skeleton.bones.find((b) => b.id === boneId)
@@ -163,17 +167,17 @@ export default function Timeline() {
         'linear'
       )
     })
-  }, [currentAnimation, selection, skeleton.bones, timeline.currentFrame, addKeyframe])
+  }, [currentAnimation, selection, skeleton.bones, timeline.currentFrame, addKeyframe, isAnimateMode])
 
   const handleDeleteKeyframe = useCallback(() => {
-    if (!currentAnimation || selection.type !== 'bone') return
+    if (!isAnimateMode || !currentAnimation || selection.type !== 'bone') return
 
     selection.ids.forEach((boneId) => {
       ;(['position', 'rotation', 'scale'] as const).forEach((property) => {
         deleteKeyframe(currentAnimation.id, boneId, property, Math.floor(timeline.currentFrame))
       })
     })
-  }, [currentAnimation, selection, timeline.currentFrame, deleteKeyframe])
+  }, [currentAnimation, selection, timeline.currentFrame, deleteKeyframe, isAnimateMode])
 
   const handleAddAnimation = useCallback(() => {
     addAnimation()
@@ -206,6 +210,7 @@ export default function Timeline() {
   // Keyframe click handler
   const handleKeyframeClick = useCallback((boneId: string, frame: number, e: React.MouseEvent) => {
     e.stopPropagation()
+    if (!isAnimateMode) return
 
     // Jump to frame
     updateTimeline({ currentFrame: frame })
@@ -243,7 +248,7 @@ export default function Timeline() {
       })
       setSelectedKeyframes(newKeyframes)
     }
-  }, [updateTimeline, setSelection, boneKeyframesMap])
+  }, [updateTimeline, setSelection, boneKeyframesMap, isAnimateMode])
 
   const handleDeleteAnimation = useCallback(() => {
     if (currentAnimationId && animations.length > 1) {
@@ -277,16 +282,35 @@ export default function Timeline() {
       <div className="flex items-center justify-between px-4 py-2 border-b border-panel-border">
         {/* Left - Playback controls */}
         <div className="flex items-center gap-2">
-          <button className="btn text-xs" onClick={handlePrevFrame} title="Previous Frame">
+          <button
+            className="btn text-xs"
+            onClick={handlePrevFrame}
+            title="Previous Frame"
+            disabled={!isAnimateMode || !currentAnimation}
+          >
             |◀
           </button>
-          <button className="btn btn-primary text-xs px-4" onClick={handlePlayPause}>
+          <button
+            className="btn btn-primary text-xs px-4"
+            onClick={handlePlayPause}
+            disabled={!isAnimateMode || !currentAnimation}
+          >
             {timeline.isPlaying ? '⏸' : '▶'}
           </button>
-          <button className="btn text-xs" onClick={handleNextFrame} title="Next Frame">
+          <button
+            className="btn text-xs"
+            onClick={handleNextFrame}
+            title="Next Frame"
+            disabled={!isAnimateMode || !currentAnimation}
+          >
             ▶|
           </button>
-          <button className="btn text-xs" onClick={handleStop} title="Stop">
+          <button
+            className="btn text-xs"
+            onClick={handleStop}
+            title="Stop"
+            disabled={!isAnimateMode || !currentAnimation}
+          >
             ⏹
           </button>
 
@@ -303,6 +327,7 @@ export default function Timeline() {
               }
               min={0}
               max={currentAnimation?.frameCount || 0}
+              disabled={!isAnimateMode || !currentAnimation}
             />
             {currentAnimation && ` / ${currentAnimation.frameCount}`}
           </span>
@@ -368,7 +393,7 @@ export default function Timeline() {
           <button
             className="btn text-xs"
             onClick={handleInsertKeyframe}
-            disabled={selection.type !== 'bone' || !currentAnimationId}
+            disabled={!isAnimateMode || selection.type !== 'bone' || !currentAnimationId}
             title="Insert Keyframe (K)"
           >
             + Key
@@ -376,7 +401,7 @@ export default function Timeline() {
           <button
             className="btn text-xs"
             onClick={handleDeleteKeyframe}
-            disabled={selection.type !== 'bone' || !currentAnimationId}
+            disabled={!isAnimateMode || selection.type !== 'bone' || !currentAnimationId}
             title="Delete Keyframe"
           >
             - Key
@@ -389,6 +414,7 @@ export default function Timeline() {
               type="checkbox"
               checked={timeline.loop}
               onChange={(e) => updateTimeline({ loop: e.target.checked })}
+              disabled={!isAnimateMode}
             />
             Loop
           </label>
